@@ -1,8 +1,17 @@
 [package]
 name = "linkrock"
+authors = ["The LinkRocks Authors"]
+description = "A distributed storage powered by Rust and Raft"
+keywords = ["storage", "distributed-systems", "raft"]
+readme = "README.md"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = [
+    "components/raft"
+]
 
 [dependencies]
