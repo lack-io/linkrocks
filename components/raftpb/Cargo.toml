@@ -1,0 +1,13 @@
+[package]
+name = "raftpb"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+bytes = { version = "1", default-features = false }
+prost = { version = "0.10", default-features = false }
+prost-types = { version = "0.10", default-features = false }
+
+[build-dependencies]
+prost-build = "0.10"

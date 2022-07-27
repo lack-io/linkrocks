@@ -1,3 +1,7 @@
+pub mod error;
+pub mod raft;
+pub mod node;
+
 #[cfg(test)]
 mod tests {
     #[test]
