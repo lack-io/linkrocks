@@ -26,7 +26,7 @@ impl ConfChangeI for ConfChange {
         let mut cc = ConfChangeV2::default();
         let single = new_conf_change_simple(self.node_id(), self.r#type());
         cc.changes.push(single);
-        cc.context() = self.context();
+        cc.context = self.context;
         cc
     }
 
@@ -66,12 +66,12 @@ impl ConfChangeV2 {
     /// Consensus was requested explicitly. The bool indicates whether the Joint State
     /// will be left automatically.
     pub fn enter_joint(&self) -> Option<bool> {
-        /// NB: in theory, more config change could qualify for the "simple"
-        /// protocol but it depends on the config on top of which the changes apply
-        /// For example, adding two learners is not OK if both nodes are part of the
-        /// base config (i.e. two voters are turned into learners in the process of
-        /// applying the conf change). In practice, these distinctions should not
-        /// matter, so sw keep it simple and use Joint Consensus liberally.
+        // NB: in theory, more config change could qualify for the "simple"
+        // protocol but it depends on the config on top of which the changes apply
+        // For example, adding two learners is not OK if both nodes are part of the
+        // base config (i.e. two voters are turned into learners in the process of
+        // applying the conf change). In practice, these distinctions should not
+        // matter, so sw keep it simple and use Joint Consensus liberally.
         if self.transition() != ConfChangeTransition::Auto || self.changes.len() > 1 {
             match self.transition() {
                 ConfChangeTransition::Auto | ConfChangeTransition::JointImplicit => Some(true),
@@ -118,18 +118,23 @@ pub fn parse_conf_change(s: &str) -> Result<Vec<ConfChangeSingle>, String> {
         }
         let mut cc = ConfChangeSingle::default();
         let mut chars = tok.chars();
-        cc.set_type(match chars.next().unwrap() {
-            'v' => ConfChangeType::ConfChangeAddNode,
-            'l' => ConfChangeType::ConfChangeAddLearnerNode,
-            'r' => ConfChangeType::ConfChangeRemoveNode,
-            'u' => ConfChangeType::ConfChangeUpdateNode,
-        });
+        if let Some(next) = chars.next() {
+            cc.set_type(match next {
+                'v' => ConfChangeType::ConfChangeAddNode,
+                'l' => ConfChangeType::ConfChangeAddLearnerNode,
+                'r' => ConfChangeType::ConfChangeRemoveNode,
+                'u' => ConfChangeType::ConfChangeUpdateNode,
+                _ => return Err(format!("unknown token {}", tok)),
+            });
+        };
         cc.node_id = match chars.as_str().parse() {
             Ok(id) => Some(id),
             Err(e) => return Err(format!("parse token {} fail: {}", tok, e)),
         };
         ccs.push(cc);
     }
+
+    Ok(ccs)
 }
 
 /// The inverse to `parse_conf_change`.
@@ -146,7 +151,7 @@ pub fn stringify_conf_change(ccs: &[ConfChangeSingle]) -> String {
             ConfChangeType::ConfChangeUpdateNode => s.push('u'),
         }
 
-        write!(&mut s, "{}", cc.node_id.unwrap()).unwrap();
+        // write!(&mut s, "{}", cc.node_id.unwrap()).unwrap();
     }
 
     s

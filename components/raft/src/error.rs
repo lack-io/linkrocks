@@ -9,6 +9,12 @@ pub enum Error {
     /// A storage error occurred.
     #[error("{0}")]
     Store(#[from] StorageError),
+    /// Raft nodes have been stopped.
+    #[error("raft: stopped")]
+    RaftStopped,
+    /// The raft step request cancelled
+    #[error("raft: step cancelled")]
+    StepCancel,
     /// Raft cannot step the local message.
     #[error("raft: cannot step raft local message")]
     StepLocalMsg,
@@ -21,9 +27,12 @@ pub enum Error {
     /// The configuration is invalid.
     #[error("{0}")]
     ConfigInvalid(String),
-    /// A protobuf message codec failed in some manner.
-    // #[error("protobuf codec error {0:?}")]
-    // CodecError(#[from] protobuf::ProtobufError),
+    /// A protobuf message codec decode failed in some manner.
+    #[error("protobuf codec decode error {inner}")]
+    CodecDecodeError { inner: prost::DecodeError },
+    /// A protobuf message codec encode failed in some manner.
+    #[error("protobuf codec encode error {inner}")]
+    CodecEncodeError { inner: prost::EncodeError },
     /// The node exists, but should not.
     #[error("The node {id} already exists in the {set} set.")]
     Exists {
@@ -52,6 +61,8 @@ impl PartialEq for Error {
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::match_same_arms))]
     fn eq(&self, other: &Error) -> bool {
         match (self, other) {
+            (Error::RaftStopped, Error::RaftStopped) => true,
+            (Error::StepCancel, Error::StepCancel) => true,
             (Error::StepPeerNotFound, Error::StepPeerNotFound) => true,
             (Error::ProposalDropped, Error::ProposalDropped) => true,
             (Error::Store(ref e1), Error::Store(ref e2)) => e1 == e2,
@@ -122,6 +133,8 @@ mod tests {
 
     #[test]
     fn test_error_equal() {
+        assert_eq!(Error::StepCancel, Error::StepCancel);
+        assert_eq!(Error::RaftStopped, Error::RaftStopped);
         assert_eq!(Error::StepPeerNotFound, Error::StepPeerNotFound);
         assert_eq!(
             Error::Store(StorageError::Compacted),

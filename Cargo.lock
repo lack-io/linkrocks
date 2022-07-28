@@ -369,6 +369,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "prost",
+ "raftpb",
  "slog",
  "slog-envlogger",
  "slog-stdlog",

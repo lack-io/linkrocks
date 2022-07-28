@@ -1,5 +1,3 @@
-use std::ptr::eq;
-
 use crate::raftpb::ConfState;
 
 fn eq_without_order(lhs: &[u64], rhs: &[u64]) -> bool {
