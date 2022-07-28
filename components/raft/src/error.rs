@@ -1,4 +1,3 @@
-// Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 use thiserror::Error;
 
 /// The base error type for raft

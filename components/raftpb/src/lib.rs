@@ -4,8 +4,6 @@ mod confchange;
 mod confstate;
 
 pub mod raftpb {
-    use std::borrow::BorrowMut;
-
     include!(concat!(env!("OUT_DIR"), "/raftpb.rs"));
 
     impl Snapshot {
