@@ -1,4 +1,4 @@
-use crate::{error::Result, raft::StateType, read_only::ReadState, status::Status};
+use crate::{errors::Result, raft::StateType, read_only::ReadState, status::Status};
 
 use raftpb::{
     prelude::{Entry, HardState, Message, Snapshot},
@@ -107,7 +107,7 @@ impl Ready {
 pub trait Node {
     /// tick increments the internal logical clock for the Node by a single tick. Election
     /// timeouts and heartbeat timeouts are in units of ticks.
-    async fn tick(self);
+    async fn tick(&self);
 
     /// campaign causes the Node to transition to candidate state and start campaigning to become leader.
     async fn campaign(&self, &mut ctx: Context) -> Result<()>;
@@ -189,3 +189,6 @@ pub struct Peer {
     context: Vec<u8>,
 }
 
+pub struct node {
+
+}

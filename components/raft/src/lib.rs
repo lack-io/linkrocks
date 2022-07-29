@@ -1,9 +1,11 @@
-pub mod error;
+pub mod errors;
 pub mod raft;
 pub mod node;
 pub mod status;
+pub mod storage;
 pub mod read_only;
 pub mod log_unstable;
+pub mod util;
 
 /// The default logger we fall back to when passed `None` in external facing constructors.
 ///
