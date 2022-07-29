@@ -1,10 +1,8 @@
 use std::{cmp::max, sync::Arc};
 
+use crate::prelude::{ConfState, Entry, HardState, Snapshot, SnapshotMetadata};
+
 use async_trait::async_trait;
-use raftpb::{
-    prelude::{Entry, Snapshot, SnapshotMetadata},
-    raftpb::{ConfState, HardState},
-};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{
@@ -379,17 +377,14 @@ impl Storage for MemStorage {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        panic::{self, AssertUnwindSafe},
-        time::Duration,
-    };
+    use std::panic::{self, AssertUnwindSafe};
 
     use prost::Message as PbMessage;
 
     use crate::errors::{Error as RaftError, StorageError};
     use raftpb::prelude::{ConfState, Entry, Snapshot, SnapshotMetadata};
 
-    use super::{MemStorage, MemStorageCore, Storage};
+    use super::{MemStorage, MemStorageCore};
 
     fn new_entry(index: u64, term: u64) -> Entry {
         let mut e = Entry::default();

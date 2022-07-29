@@ -1,5 +1,5 @@
-use raftpb::prelude::{Entry, Snapshot};
-use slog::{Logger, info, crit};
+use crate::prelude::{Entry, Snapshot};
+use slog::{crit, info, Logger};
 
 // unstable.entries[i] has raft log position i+unstable.offset.
 // Note that unstable.offset may be less than the highest log
@@ -108,12 +108,15 @@ impl unstable {
 
     fn truncate_and_append(&mut self, ents: Vec<Entry>) {
         let after = ents[0].index();
-        if after == self.offset + self.entries.len() as u64  {
+        if after == self.offset + self.entries.len() as u64 {
             // after is the next index in the entries
             // directly append
             self.entries.extend(ents);
         } else if after <= self.offset {
-            info!(self.logger, "replace the unstable entries from index {}", after);
+            info!(
+                self.logger,
+                "replace the unstable entries from index {}", after
+            );
             // The log is being truncated to before our current offset
             // portion, so set the offset and replace the entries
             self.offset = after;
@@ -121,7 +124,10 @@ impl unstable {
         } else {
             // truncate to after and copy to u.entries
             // then append
-            info!(self.logger, "truncate the unstable entries before index {}", after);
+            info!(
+                self.logger,
+                "truncate the unstable entries before index {}", after
+            );
             self.entries = self.slice(self.offset, after);
             self.entries.extend(ents);
         }
@@ -129,17 +135,24 @@ impl unstable {
 
     fn slice(&self, low: u64, high: u64) -> Vec<Entry> {
         self.must_check_out_of_bounds(low, high);
-        self.entries[(low-self.offset) as usize .. (high-self.offset) as usize].to_vec()
+        self.entries[(low - self.offset) as usize..(high - self.offset) as usize].to_vec()
     }
 
     // u.offset <= lo <= hi <= u.offset+len(u.entries)
     fn must_check_out_of_bounds(&self, low: u64, high: u64) {
         if low > high {
-            crit!(self.logger, "invalid unstable.slice {} > {}", low, high);            
+            crit!(self.logger, "invalid unstable.slice {} > {}", low, high);
         }
         let upper = self.offset + self.entries.len() as u64;
         if low < self.offset || high > upper {
-            crit!(self.logger, "unstable.slice[{},{}) out of bound [{},{}]", low, high, self.offset, upper);
+            crit!(
+                self.logger,
+                "unstable.slice[{},{}) out of bound [{},{}]",
+                low,
+                high,
+                self.offset,
+                upper
+            );
         }
     }
 }
@@ -178,7 +191,12 @@ mod tests {
 
         assert!(unstable.maybe_last_index().is_some());
 
-        unstable.entries.push(Entry { term: Some(1), index: Some(1), r#type: Some(1), data: Some(vec![]) });
+        unstable.entries.push(Entry {
+            term: Some(1),
+            index: Some(1),
+            r#type: Some(1),
+            data: Some(vec![]),
+        });
         assert_eq!(unstable.maybe_last_index(), Some(1));
         unstable.offset += 1;
         assert_eq!(unstable.maybe_last_index(), Some(2));
