@@ -24,6 +24,7 @@ mod read_only;
 pub mod status;
 pub mod storage;
 pub mod quorum;
+pub mod tracker;
 pub mod util;
 
 pub mod prelude {
