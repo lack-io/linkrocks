@@ -67,8 +67,8 @@ impl MajorityConfig {
     /// If the matched indexes and groups are `[(1, 1), (2, 2), (3, 2)]`, it will return `1`.
     pub fn committed_index(&self, use_group_commit: bool, l: &impl AckedIndexer) -> (u64, bool) {
         if self.voters.is_empty() {
-            /// This plays well with joint which, when one half is the zero
-            /// MajorityConfig, should behave like the other half.
+            // This plays well with joint which, when one half is the zero
+            // MajorityConfig, should behave like the other half.
             return (u64::MAX, true);
         }
 

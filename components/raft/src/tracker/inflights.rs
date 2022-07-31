@@ -71,4 +71,30 @@ impl Inflights {
     pub fn full(&self) -> bool {
         self.count == self.cap || self.incoming_cap.map_or(false, |cap| self.count >= cap)
     }
+
+    /// Adds an inflight into inflights
+    pub fn add(&mut self, inflight: u64) {
+        if self.full() {
+            panic!("cannot add into a full inflights")
+        }
+
+        if self.buffer.capacity() == 0 {
+            debug_assert_eq!(self.count, 0);
+            debug_assert_eq!(self.start, 0);
+            debug_assert!(self.incoming_cap.is_none());
+            self.buffer = Vec::with_capacity(self.cap);
+        }
+
+        let mut next = self.start + self.count;
+        if next >= self.cap {
+            next -= self.cap;
+        }
+        assert!(next <= self.buffer.len());
+        if next == self.buffer.len() {
+            self.buffer.push(inflight);
+        } else {
+            self.buffer[next] = inflight;
+        }
+        self.count += 1;
+    }
 }
