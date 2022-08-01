@@ -24,7 +24,7 @@ impl ConfChangeI for ConfChange {
     #[inline]
     fn into_v2(self) -> ConfChangeV2 {
         let mut cc = ConfChangeV2::default();
-        let single = new_conf_change_simple(self.node_id(), self.r#type());
+        let single = new_conf_change_single(self.node_id(), self.r#type());
         cc.changes.push(single);
         cc.context = self.context;
         cc
@@ -92,7 +92,7 @@ impl ConfChangeV2 {
 }
 
 // Creates a `ConfChangeSimple`.
-pub fn new_conf_change_simple(node_id: u64, ty: ConfChangeType) -> ConfChangeSingle {
+pub fn new_conf_change_single(node_id: u64, ty: ConfChangeType) -> ConfChangeSingle {
     let mut single = ConfChangeSingle::default();
     single.node_id = Some(node_id);
     single.set_type(ty);

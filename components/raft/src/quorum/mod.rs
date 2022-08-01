@@ -5,6 +5,9 @@ use crate::HashMap;
 pub mod joint;
 pub mod majority;
 
+pub use joint::JointConfig;
+pub use majority::MajorityConfig;
+
 /// VoteResult indicates the outcome of a vote.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VoteResult {

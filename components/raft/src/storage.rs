@@ -38,6 +38,47 @@ impl RaftState {
     }
 }
 
+/// Records the context of the caller who calls entries() of Storage trait.
+#[derive(Debug, Clone)]
+pub struct GetEntriesContext(pub(crate) GetEntriesFor);
+
+impl GetEntriesContext {
+    /// Used for callers out of raft. Caller can customize if it supports async.
+    pub fn empty(can_async: bool) -> Self {
+        GetEntriesContext(GetEntriesFor::Empty(can_async))
+    }
+
+    /// Check if the caller's context support fetching entries asynchrouously.
+    pub fn can_async(&self) -> bool {
+        match self.0 {
+            GetEntriesFor::SendAppend { .. } => true,
+            GetEntriesFor::Empty(can_async) => can_async,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum GetEntriesFor {
+    // for sending entries to followers
+    SendAppend {
+        /// the peer id to which the entries are going to send
+        to: u64,
+        /// the term when the request is issued
+        term: u64,
+        /// whether to exhaust all the entries
+        aggressively: bool,
+    },
+    // for getting committed entries in a ready
+    GenReady,
+    // for getting entries to check pending conf when transferring leader
+    TransferLeader,
+    // for getting entries to check pending conf when forwarding commit index by vote messages
+    CommitByVote,
+    // It's not called by the raft itself
+    Empty(bool),
+}
+
 /// Storage is an interface that may be implemented by the application
 /// to retrieve log entries from storage.
 ///
@@ -52,7 +93,13 @@ pub trait Storage {
     /// `entries` returns a slice of log entries in the range [low,high].
     /// MaxSize limits the total size of the log entries returned, but
     /// Entries returns at least one entry if any.
-    async fn entries(&self, low: u64, high: u64, max_size: Option<u64>) -> Result<Vec<Entry>>;
+    async fn entries(
+        &self,
+        low: u64,
+        high: u64,
+        max_size: Option<u64>,
+        context: GetEntriesContext,
+    ) -> Result<Vec<Entry>>;
 
     /// `term` returns the term of entry i, which must be in the range
     /// [first_index()-1, last_index()]. The term of the entry before
@@ -72,7 +119,7 @@ pub trait Storage {
     /// `snapshot` returns the most recent snapshot.
     /// If snapshot is temporarily unavailable, it should return StorageError::SnapshotTemporarilyUnavailable
     /// snapshot and call `snapshot` later.
-    async fn snapshot(&self) -> Result<Snapshot>;
+    async fn snapshot(&self, request_index: u64, to: u64) -> Result<Snapshot>;
 }
 
 /// MemStorage implements the `Storage` trait backed by an in-memory array.
@@ -82,6 +129,14 @@ pub struct MemStorageCore {
     snapshot_metadata: SnapshotMetadata,
     /// ents[i] has raft log position i+snapshot.metadata.index()
     ents: Vec<Entry>,
+
+    // If it is true, the next snapshot will return a
+    // SnapshotTemporarilyUnavailable error.
+    trigger_snap_unavailable: bool,
+    // Peers that are fetching entries asynchronously.
+    trigger_log_unavailable: bool,
+    // Stores get entries context.
+    get_entries_context: Option<GetEntriesContext>,
 }
 
 impl MemStorageCore {
@@ -111,7 +166,13 @@ impl MemStorageCore {
         self.raft_state.conf_state = cs;
     }
 
-    pub fn entries(&self, low: u64, high: u64, max_size: Option<u64>) -> Result<Vec<Entry>> {
+    pub fn entries(
+        &mut self,
+        low: u64,
+        high: u64,
+        max_size: Option<u64>,
+        context: GetEntriesContext,
+    ) -> Result<Vec<Entry>> {
         if low < self.first_index() {
             return Err(Error::Store(StorageError::Compacted));
         }
@@ -122,12 +183,14 @@ impl MemStorageCore {
                 high,
             )
         }
-        if self.ents.is_empty() {
-            return Err(Error::Store(StorageError::Unavailable));
+        if self.trigger_log_unavailable && context.can_async() {
+            self.get_entries_context = Some(context);
+            return Err(Error::Store(StorageError::LogTemporarilyUnavailable));
         }
 
         let offset = self.ents[0].index();
-        let mut entries = self.ents[(low - offset) as usize..(high - offset) as usize].to_vec();
+        let mut entries: Vec<Entry> =
+            self.ents[(low - offset) as usize..(high - offset) as usize].to_vec();
         limit_size(&mut entries, max_size);
         Ok(entries)
     }
@@ -270,6 +333,21 @@ impl MemStorageCore {
         Ok(())
     }
 
+    /// Trigger a SnapshotTemporarilyUnavailable error.
+    pub fn trigger_snap_unavailable(&mut self) {
+        self.trigger_snap_unavailable = true;
+    }
+
+    /// Set a LogTemporarilyUnavailable error.
+    pub fn trigger_log_unavailable(&mut self, v: bool) {
+        self.trigger_log_unavailable = v;
+    }
+
+    /// Take get entries context.
+    pub fn take_get_entries_context(&mut self) -> Option<GetEntriesContext> {
+        self.get_entries_context.take()
+    }
+
     /// makes a snapshot which can be retrieved with `snapshot()` and
     /// can be used to reconstruct the state at that point.
     /// If any configuration changes have been made since the last compaction,
@@ -354,8 +432,17 @@ impl Storage for MemStorage {
         Ok(self.rl().await.clone().raft_state)
     }
 
-    async fn entries(&self, low: u64, high: u64, max_size: Option<u64>) -> Result<Vec<Entry>> {
-        self.rl().await.clone().entries(low, high, max_size)
+    async fn entries(
+        &self,
+        low: u64,
+        high: u64,
+        max_size: Option<u64>,
+        context: GetEntriesContext,
+    ) -> Result<Vec<Entry>> {
+        self.rl()
+            .await
+            .clone()
+            .entries(low, high, max_size, context)
     }
 
     async fn term(&self, i: u64) -> Result<u64> {
@@ -370,8 +457,20 @@ impl Storage for MemStorage {
         Ok(self.rl().await.clone().first_index())
     }
 
-    async fn snapshot(&self) -> Result<Snapshot> {
-        Ok(self.rl().await.clone().snapshot())
+    async fn snapshot(&self, request_index: u64, _to: u64) -> Result<Snapshot> {
+        let mut core = self.wl().await;
+        if core.trigger_snap_unavailable {
+            core.trigger_snap_unavailable = false;
+            Err(Error::Store(StorageError::SnapshotTemporarilyUnavailable))
+        } else {
+            let mut snap = core.snapshot();
+            let mut meta = snap.metadata.unwrap();
+            if meta.index() < request_index {
+                meta.index = Some(request_index);
+            }
+            snap.metadata = Some(meta);
+            Ok(snap)
+        }
     }
 }
 
@@ -384,7 +483,7 @@ mod test {
     use crate::errors::{Error as RaftError, StorageError};
     use raftpb::prelude::{ConfState, Entry, Snapshot, SnapshotMetadata};
 
-    use super::{MemStorage, MemStorageCore};
+    use super::{GetEntriesContext, MemStorage, MemStorageCore};
 
     fn new_entry(index: u64, term: u64) -> Entry {
         let mut e = Entry::default();
@@ -489,7 +588,7 @@ mod test {
         for (i, (lo, hi, maxsize, wentries)) in tests.drain(..).enumerate() {
             let mut storage = MemStorageCore::new();
             storage.ents = ents.clone();
-            let e = storage.entries(lo, hi, Some(maxsize));
+            let e = storage.entries(lo, hi, Some(maxsize), GetEntriesContext::empty(false));
             if e != wentries {
                 panic!("#{}: expect entries {:?}, got {:?}", i, wentries, e);
             }
@@ -540,7 +639,9 @@ mod test {
             if index != windex {
                 panic!("#{}: want {}, index {}", i, windex, index);
             }
-            let term = if let Ok(v) = storage.entries(index, index + 1, Some(1)) {
+            let term = if let Ok(v) =
+                storage.entries(index, index + 1, Some(1), GetEntriesContext::empty(false))
+            {
                 v.first().map_or(0, |e| e.term())
             } else {
                 0
@@ -549,7 +650,10 @@ mod test {
                 panic!("#{}: want {}, term {}", i, wterm, term);
             }
             let last = storage.last_index();
-            let len = storage.entries(index, last + 1, Some(100)).unwrap().len();
+            let len = storage
+                .entries(index, last + 1, Some(100), GetEntriesContext::empty(false))
+                .unwrap()
+                .len();
             if len != wlen {
                 panic!("#{}: want {}, term {}", i, wlen, len);
             }

@@ -4,7 +4,7 @@ mod confchange;
 mod confstate;
 
 pub use crate::confchange::{
-    new_conf_change_simple, parse_conf_change, stringify_conf_change, ConfChangeI,
+    new_conf_change_single, parse_conf_change, stringify_conf_change, ConfChangeI,
 };
 pub use crate::confstate::conf_state_eq;
 

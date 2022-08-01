@@ -14,18 +14,18 @@ pub enum SnapshotStatus {
     SnapshotFailure,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 /// SoftState provides state that is useful for logging and debugging.
 /// The state is volatile and does not need to be persisted to the WAL.
 pub struct SoftState {
     // must use atomic operations to access; keep 64-bit aligned.
-    pub lead: u64,
+    pub leader_id: u64,
     pub raft_state: StateType,
 }
 
 impl PartialEq for SoftState {
     fn eq(&self, other: &Self) -> bool {
-        self.lead == other.lead && self.raft_state == other.raft_state
+        self.leader_id == other.leader_id && self.raft_state == other.raft_state
     }
 }
 

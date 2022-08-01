@@ -13,6 +13,7 @@ message Entry {
 	optional uint64     Index = 3; // must be 64-bit aligned for atomic operations
 	optional EntryType  Type  = 1;
 	optional bytes      Data  = 4;
+	optional bytes      context = 5;
 }
 
 message SnapshotMetadata {

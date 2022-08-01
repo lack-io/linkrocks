@@ -1,5 +1,3 @@
-
-
 #[macro_export]
 macro_rules! fatal {
     ($logger:expr, $msg:expr) => {{
@@ -19,13 +17,18 @@ macro_rules! fatal {
 pub mod errors;
 mod log_unstable;
 pub mod node;
+pub mod quorum;
 pub mod raft;
+pub mod raft_log;
 mod read_only;
 pub mod status;
+pub mod config;
 pub mod storage;
-pub mod quorum;
 pub mod tracker;
+pub mod confchange;
 pub mod util;
+
+pub use crate::raft::{INVALID_ID, INVALID_INDEX};
 
 pub mod prelude {
     pub use raftpb::prelude::*;
