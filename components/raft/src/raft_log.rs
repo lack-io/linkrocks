@@ -280,6 +280,30 @@ impl<T: Storage> RaftLog<T> {
         self.committed = to_commit
     }
 
+    /// Advance the applied index to the passed in value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value passed in is not new or known.
+    #[deprecated = "Call raft::commit_apply(idx) instead. Joint Consensus requires an on-apply hook to
+    finalize a configuration change. This will become internal API in future versions."]
+    pub fn applied_to(&mut self, idx: u64) {
+        if idx == 0 {
+            return;
+        }
+        if idx > cmp::min(self.committed, self.persisted) || idx < self.applied {
+            fatal!(
+                self.unstable.logger,
+                "applied({}) is out of range [prev_applied({}), min(committed({}), persisted({}))]",
+                idx,
+                self.applied,
+                self.committed,
+                self.persisted,
+            )
+        }
+        self.applied = idx;
+    }
+
     /// Returns the last applied index.
     pub fn applied(&self) -> u64 {
         self.applied

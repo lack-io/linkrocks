@@ -2,6 +2,7 @@ use crate::prelude::Entry;
 use crate::HashSet;
 
 use prost::Message as PbMessage;
+use raftpb::raftpb::Message;
 use slog::{b, record_static, OwnedKVList, Record, KV};
 
 use std::fmt;
@@ -64,6 +65,16 @@ pub fn limit_size<T: PbMessage + Clone>(entries: &mut Vec<T>, max: Option<u64>) 
         .count();
 
     entries.truncate(limit);
+}
+
+/// Check whether the entry is continuous to the message.
+/// i.e msg's next entry index should be equal to the index of the first entry in `ents`
+pub fn is_continuous_ents(msg: &Message, ents: &[Entry]) -> bool {
+    if !msg.entries.is_empty() && !ents.is_empty() {
+        let expected_next_idx = msg.entries.last().unwrap().index() + 1;
+        return expected_next_idx == ents.first().unwrap().index();
+    }
+    true
 }
 
 struct FormatKeyValueList {

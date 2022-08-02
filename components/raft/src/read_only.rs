@@ -31,8 +31,8 @@ impl Default for ReadOnlyOption {
 // request_ctx
 #[derive(Debug, Default, Clone)]
 pub struct ReadState {
-    index: u64,
-    request_ctx: Vec<u8>,
+    pub index: u64,
+    pub request_ctx: Vec<u8>,
 }
 
 #[derive(Debug, Default, Clone)]
