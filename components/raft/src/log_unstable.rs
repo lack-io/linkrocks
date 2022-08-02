@@ -43,7 +43,7 @@ impl Unstable {
     pub fn maybe_first_index(&self) -> Option<u64> {
         self.snapshot
             .as_ref()
-            .map(|snap| snap.metadata.as_ref().unwrap().index() + 1)
+            .map(|snap| snap.metadata.as_ref().unwrap().index + 1)
     }
 
     /// Returns the last index if it has at least one unstable entry or snapshot.
@@ -52,7 +52,7 @@ impl Unstable {
             0 => self
                 .snapshot
                 .as_ref()
-                .map(|snap| snap.metadata.as_ref().unwrap().index()),
+                .map(|snap| snap.metadata.as_ref().unwrap().index),
             len => Some(self.offset + len as u64 - 1),
         }
     }
@@ -62,8 +62,8 @@ impl Unstable {
         if idx < self.offset {
             let snapshot = self.snapshot.as_ref()?;
             let meta = snapshot.metadata.as_ref().unwrap();
-            if idx == meta.index() {
-                Some(meta.term())
+            if idx == meta.index {
+                Some(meta.term)
             } else {
                 None
             }
@@ -72,7 +72,7 @@ impl Unstable {
                 if idx > last {
                     return None;
                 }
-                Some(self.entries[(idx - self.offset) as usize].term())
+                Some(self.entries[(idx - self.offset) as usize].term)
             })
         }
     }
@@ -83,17 +83,17 @@ impl Unstable {
         // The snapshot must be stabled before entries
         assert!(self.snapshot.is_none());
         if let Some(entry) = self.entries.last() {
-            if entry.index() != index || entry.term() != term {
+            if entry.index != index || entry.term != term {
                 fatal!(
                     self.logger,
                     "the last one of unstable.slice has different index {} and term {}, expect {} {}",
-                    entry.index(),
-                    entry.term(),
+                    entry.index,
+                    entry.term,
                     index,
                     term
                 );
             }
-            self.offset = entry.index() + 1;
+            self.offset = entry.index + 1;
             self.entries.clear();
             self.entries_size = 0;
         } else {
@@ -109,11 +109,11 @@ impl Unstable {
     /// Clears the unstable snapshot.
     pub fn stable_snap(&mut self, index: u64) {
         if let Some(snap) = &self.snapshot {
-            if snap.metadata.as_ref().unwrap().index() != index {
+            if snap.metadata.as_ref().unwrap().index != index {
                 fatal!(
                     self.logger,
                     "unstable.snap has different index {}, expect {}",
-                    snap.metadata.as_ref().unwrap().index(),
+                    snap.metadata.as_ref().unwrap().index,
                     index
                 );
             }
@@ -131,7 +131,7 @@ impl Unstable {
     pub fn restore(&mut self, snap: Snapshot) {
         self.entries.clear();
         self.entries_size = 0;
-        self.offset = snap.metadata.as_ref().unwrap().index() + 1;
+        self.offset = snap.metadata.as_ref().unwrap().index + 1;
         self.snapshot = Some(snap);
     }
 
@@ -141,7 +141,7 @@ impl Unstable {
     ///
     /// Panics if truncate logs to the entry before snapshot
     pub fn truncate_and_append(&mut self, ents: &[Entry]) {
-        let after = ents[0].index();
+        let after = ents[0].index;
         if after == self.offset + self.entries.len() as u64 {
             // after is the next index in the self.entries, append directly
         } else if after <= self.offset {
@@ -205,16 +205,16 @@ mod test {
 
     fn new_entry(index: u64, term: u64) -> Entry {
         let mut e = Entry::default();
-        e.term = Some(term);
-        e.index = Some(index);
+        e.term = term;
+        e.index = index;
         e
     }
 
     fn new_snapshot(index: u64, term: u64) -> Snapshot {
         let mut snap = Snapshot::default();
         let mut meta = SnapshotMetadata::default();
-        meta.index = Some(index);
-        meta.term = Some(term);
+        meta.index = index;
+        meta.term = term;
         snap.metadata = Some(meta);
         snap
     }
@@ -368,7 +368,7 @@ mod test {
         let s = new_snapshot(6, 2);
         u.restore(s.clone());
 
-        assert_eq!(u.offset, s.metadata.as_ref().unwrap().index() + 1);
+        assert_eq!(u.offset, s.metadata.as_ref().unwrap().index + 1);
         assert!(u.entries.is_empty());
         assert_eq!(u.entries_size, 0);
         assert_eq!(u.snapshot, Some(s));

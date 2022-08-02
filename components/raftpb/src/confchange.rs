@@ -1,9 +1,9 @@
-use std::borrow::Cow;
-
 use crate::{
     prelude::{ConfChange, ConfChangeSingle, ConfChangeType, ConfChangeV2},
     raftpb::ConfChangeTransition,
 };
+use std::borrow::Cow;
+use std::fmt::Write;
 
 /// Abstracts over ConfChangeV2 and (legacy) ConfChange to allow
 /// treating them in a unified manner.
@@ -24,7 +24,7 @@ impl ConfChangeI for ConfChange {
     #[inline]
     fn into_v2(self) -> ConfChangeV2 {
         let mut cc = ConfChangeV2::default();
-        let single = new_conf_change_single(self.node_id(), self.r#type());
+        let single = new_conf_change_single(self.node_id, self.r#type());
         cc.changes.push(single);
         cc.context = self.context;
         cc
@@ -94,7 +94,7 @@ impl ConfChangeV2 {
 // Creates a `ConfChangeSimple`.
 pub fn new_conf_change_single(node_id: u64, ty: ConfChangeType) -> ConfChangeSingle {
     let mut single = ConfChangeSingle::default();
-    single.node_id = Some(node_id);
+    single.node_id = node_id;
     single.set_type(ty);
     single
 }
@@ -128,7 +128,7 @@ pub fn parse_conf_change(s: &str) -> Result<Vec<ConfChangeSingle>, String> {
             });
         };
         cc.node_id = match chars.as_str().parse() {
-            Ok(id) => Some(id),
+            Ok(id) => id,
             Err(e) => return Err(format!("parse token {} fail: {}", tok, e)),
         };
         ccs.push(cc);
@@ -151,7 +151,7 @@ pub fn stringify_conf_change(ccs: &[ConfChangeSingle]) -> String {
             ConfChangeType::ConfChangeUpdateNode => s.push('u'),
         }
 
-        // write!(&mut s, "{}", cc.node_id.unwrap()).unwrap();
+        write!(&mut s, "{}", cc.node_id).unwrap();
     }
 
     s

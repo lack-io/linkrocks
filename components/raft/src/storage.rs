@@ -188,7 +188,7 @@ impl MemStorageCore {
             return Err(Error::Store(StorageError::LogTemporarilyUnavailable));
         }
 
-        let offset = self.ents[0].index();
+        let offset = self.ents[0].index;
         let mut entries: Vec<Entry> =
             self.ents[(low - offset) as usize..(high - offset) as usize].to_vec();
         limit_size(&mut entries, max_size);
@@ -204,7 +204,7 @@ impl MemStorageCore {
         if at >= self.ents.len() {
             return Err(Error::Store(StorageError::Unavailable));
         }
-        Ok(self.ents[at].term())
+        Ok(self.ents[at].term)
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -212,17 +212,17 @@ impl MemStorageCore {
 
         let mut meta = SnapshotMetadata::default();
         meta.index = self.raft_state.hard_state.commit;
-        meta.term = match meta.index().cmp(&self.snapshot_metadata.index()) {
+        meta.term = match meta.index.cmp(&self.snapshot_metadata.index) {
             std::cmp::Ordering::Equal => self.snapshot_metadata.term,
             std::cmp::Ordering::Greater => {
-                let offset = self.ents[0].index();
-                self.ents[(meta.index() - offset) as usize].term
+                let offset = self.ents[0].index;
+                self.ents[(meta.index - offset) as usize].term
             }
             std::cmp::Ordering::Less => {
                 panic!(
                     "commit {} < snapshot_metadata.index {}",
-                    meta.index(),
-                    self.snapshot_metadata.index()
+                    meta.index,
+                    self.snapshot_metadata.index
                 )
             }
         };
@@ -239,15 +239,15 @@ impl MemStorageCore {
 
     fn first_index(&self) -> u64 {
         match self.ents.first() {
-            Some(e) => e.index(),
-            None => self.snapshot_metadata.index() + 1,
+            Some(e) => e.index,
+            None => self.snapshot_metadata.index + 1,
         }
     }
 
     fn last_index(&self) -> u64 {
         match self.ents.last() {
-            Some(e) => e.index(),
-            None => self.snapshot_metadata.index(),
+            Some(e) => e.index,
+            None => self.snapshot_metadata.index,
         }
     }
 
@@ -258,7 +258,7 @@ impl MemStorageCore {
     /// Panics if the snapshot index is less than the storage's first index.
     pub fn apply_snapshot(&mut self, snap: Snapshot) -> Result<()> {
         let meta = snap.metadata.unwrap();
-        let index = meta.index();
+        let index = meta.index;
 
         if self.first_index() > index {
             return Err(Error::Store(StorageError::SnapshotOutOfDate));
@@ -266,8 +266,8 @@ impl MemStorageCore {
 
         self.snapshot_metadata = meta.clone();
 
-        self.raft_state.hard_state.term = Some(max(self.raft_state.hard_state.term(), meta.term()));
-        self.raft_state.hard_state.commit = Some(index);
+        self.raft_state.hard_state.term = max(self.raft_state.hard_state.term, meta.term);
+        self.raft_state.hard_state.commit = index;
         self.ents.clear();
 
         // Update conf states.
@@ -293,7 +293,7 @@ impl MemStorageCore {
         }
 
         if let Some(entry) = self.ents.first() {
-            let offset = compact_index - entry.index();
+            let offset = compact_index - entry.index;
             self.ents.drain(..offset as usize);
         }
 
@@ -310,23 +310,23 @@ impl MemStorageCore {
         if ents.is_empty() {
             return Ok(());
         }
-        if self.first_index() > ents[0].index() {
+        if self.first_index() > ents[0].index {
             panic!(
                 "overwrite compacted raft logs, compacted: {}, append: {}",
                 self.first_index() - 1,
-                ents[0].index(),
+                ents[0].index,
             );
         }
-        if self.last_index() + 1 < ents[0].index() {
+        if self.last_index() + 1 < ents[0].index {
             panic!(
                 "raft logs should be continuous, last index: {}, new appended: {}",
                 self.last_index(),
-                ents[0].index()
+                ents[0].index
             );
         }
 
         // Remove all entries overwritten by `ents`.
-        let diff = ents[0].index() - self.first_index();
+        let diff = ents[0].index - self.first_index();
         self.ents.drain(diff as usize..);
         self.ents.extend_from_slice(ents);
 
@@ -358,7 +358,7 @@ impl MemStorageCore {
         cs: Option<ConfState>,
         data: &[u8],
     ) -> Result<Snapshot> {
-        if i <= self.snapshot_metadata.index() {
+        if i <= self.snapshot_metadata.index {
             return Err(Error::Store(StorageError::SnapshotOutOfDate));
         }
 
@@ -367,7 +367,7 @@ impl MemStorageCore {
             return Err(Error::Store(StorageError::SnapshotTemporarilyUnavailable));
         }
 
-        self.snapshot_metadata.index = Some(i);
+        self.snapshot_metadata.index = i;
         self.snapshot_metadata.term = self.ents[(i - offset) as usize].term;
         if let Some(conf_state) = cs {
             self.raft_state.conf_state = conf_state;
@@ -375,7 +375,7 @@ impl MemStorageCore {
 
         let snapshot = Snapshot {
             metadata: Some(self.snapshot_metadata.clone()),
-            data: Some(data.to_vec()),
+            data: data.to_vec(),
         };
         Ok(snapshot)
     }
@@ -465,8 +465,8 @@ impl Storage for MemStorage {
         } else {
             let mut snap = core.snapshot();
             let mut meta = snap.metadata.unwrap();
-            if meta.index() < request_index {
-                meta.index = Some(request_index);
+            if meta.index < request_index {
+                meta.index = request_index;
             }
             snap.metadata = Some(meta);
             Ok(snap)
@@ -487,8 +487,8 @@ mod test {
 
     fn new_entry(index: u64, term: u64) -> Entry {
         let mut e = Entry::default();
-        e.term = Some(term);
-        e.index = Some(index);
+        e.term = term;
+        e.index = index;
         e
     }
 
@@ -499,13 +499,13 @@ mod test {
     fn new_snapshot(index: u64, term: u64, voters: Vec<u64>) -> Snapshot {
         let mut s = Snapshot::default();
         let mut meta = SnapshotMetadata::default();
-        meta.index = Some(index);
-        meta.term = Some(term);
+        meta.index = index;
+        meta.term = term;
         if let Some(ref mut conf_state) = meta.conf_state {
             conf_state.voters = voters;
         };
         s.metadata = Some(meta);
-        s.data = Some((&[]).to_vec());
+        s.data = (&[]).to_vec();
         s
     }
 
@@ -642,7 +642,7 @@ mod test {
             let term = if let Ok(v) =
                 storage.entries(index, index + 1, Some(1), GetEntriesContext::empty(false))
             {
-                v.first().map_or(0, |e| e.term())
+                v.first().map_or(0, |e| e.term)
             } else {
                 0
             };
@@ -678,8 +678,8 @@ mod test {
         for (i, (idx, wresult)) in tests.drain(..).enumerate() {
             let mut storage = MemStorageCore::new();
             storage.ents = ents.clone();
-            storage.raft_state.hard_state.commit = Some(idx);
-            storage.raft_state.hard_state.term = Some(idx);
+            storage.raft_state.hard_state.commit = idx;
+            storage.raft_state.hard_state.term = idx;
             storage.raft_state.conf_state = conf_state.clone();
 
             let result = storage.create_snapshot(idx, None, &[]);

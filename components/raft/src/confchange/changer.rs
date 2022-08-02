@@ -165,16 +165,16 @@ impl Changer<'_> {
         ccs: &[ConfChangeSingle],
     ) -> Result<()> {
         for cc in ccs {
-            if cc.node_id() == 0 {
+            if cc.node_id == 0 {
                 // Repliaces the NodeID with zero if it decides (downstream of
                 // raft) to not apply a change, so we have to have explicit code
                 // here to ignore these.
                 continue;
             }
             match cc.r#type() {
-                ConfChangeType::ConfChangeAddNode => self.make_voter(cfg, prs, cc.node_id()),
-                ConfChangeType::ConfChangeRemoveNode => self.make_learner(cfg, prs, cc.node_id()),
-                ConfChangeType::ConfChangeAddLearnerNode => self.remove(cfg, prs, cc.node_id()),
+                ConfChangeType::ConfChangeAddNode => self.make_voter(cfg, prs, cc.node_id),
+                ConfChangeType::ConfChangeRemoveNode => self.make_learner(cfg, prs, cc.node_id),
+                ConfChangeType::ConfChangeAddLearnerNode => self.remove(cfg, prs, cc.node_id),
                 ConfChangeType::ConfChangeUpdateNode => {}
             }
         }

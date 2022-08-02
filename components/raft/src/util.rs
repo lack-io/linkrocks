@@ -71,8 +71,8 @@ pub fn limit_size<T: PbMessage + Clone>(entries: &mut Vec<T>, max: Option<u64>) 
 /// i.e msg's next entry index should be equal to the index of the first entry in `ents`
 pub fn is_continuous_ents(msg: &Message, ents: &[Entry]) -> bool {
     if !msg.entries.is_empty() && !ents.is_empty() {
-        let expected_next_idx = msg.entries.last().unwrap().index() + 1;
-        return expected_next_idx == ents.first().unwrap().index();
+        let expected_next_idx = msg.entries.last().unwrap().index + 1;
+        return expected_next_idx == ents.first().unwrap().index;
     }
     true
 }
@@ -167,5 +167,5 @@ pub fn entry_approximate_size(e: &Entry) -> usize {
     // If entry_type is conf change, in general, the size should be
     // tag(5) + entry_type(1) + term(1) + index(2) + data(1) + context(1) = 11.
     // We choose 12 in case of large index or large data for normal entry.
-    e.data().len() + e.context().len() + 12
+    e.data.len() + e.context.len() + 12
 }

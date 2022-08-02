@@ -25,7 +25,7 @@ pub fn conf_state_eq(lhs: &ConfState, rhs: &ConfState) -> bool {
     if lhs.voters == rhs.voters
         && lhs.learners == rhs.learners
         && lhs.voters_outgoing == rhs.voters_outgoing
-        && lhs.auto_leave() == rhs.auto_leave()
+        && lhs.auto_leave == rhs.auto_leave
     {
         return true;
     }
@@ -34,5 +34,5 @@ pub fn conf_state_eq(lhs: &ConfState, rhs: &ConfState) -> bool {
         && eq_without_order(&lhs.learners, &rhs.learners)
         && eq_without_order(&lhs.voters_outgoing, &rhs.voters_outgoing)
         && eq_without_order(&lhs.learners_next, &rhs.learners_next)
-        && lhs.auto_leave() == rhs.auto_leave()
+        && lhs.auto_leave == rhs.auto_leave
 }

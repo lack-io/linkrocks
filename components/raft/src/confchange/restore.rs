@@ -100,7 +100,7 @@ pub fn restore(tracker: &mut ProgressTracker, next_idx: u64, cs: &ConfState) -> 
             let (cfg, changes) = Changer::new(tracker).simple(&[cc])?;
             tracker.apply_conf(cfg, changes, next_idx);
         }
-        let (cfg, changes) = Changer::new(tracker).enter_joint(cs.auto_leave(), &incoming)?;
+        let (cfg, changes) = Changer::new(tracker).enter_joint(cs.auto_leave, &incoming)?;
         tracker.apply_conf(cfg, changes, next_idx);
     }
 

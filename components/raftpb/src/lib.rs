@@ -15,9 +15,7 @@ pub mod raftpb {
         /// For a given snapshot, determine if it's empty or not.
         pub fn is_empty(&self) -> bool {
             if let Some(metadata) = self.metadata.as_ref() {
-                if let Some(index) = metadata.index {
-                    return index == 0;
-                }
+                return metadata.index == 0;
             }
 
             false
@@ -27,9 +25,9 @@ pub mod raftpb {
     impl HardState {
         pub fn empty() -> Self {
             HardState {
-                term: Some(0),
-                vote: Some(0),
-                commit: Some(0),
+                term: 0,
+                vote: 0,
+                commit: 0,
             }
         }
 
@@ -66,18 +64,18 @@ mod tests {
     #[test]
     fn test_snapshot_is_empty() {
         let mut s = Snapshot {
-            data: Some(Vec::new()),
+            data: Vec::new(),
             metadata: Some(SnapshotMetadata {
                 conf_state: None,
-                index: Some(1),
-                term: Some(1),
+                index: 1,
+                term: 1,
             }),
         };
 
-        assert_eq!((&s).metadata.as_ref().unwrap().index, Some(1));
+        assert_eq!(s.metadata.as_ref().unwrap().index, 1);
         assert!(!(&s).is_empty());
 
-        s.metadata.as_mut().unwrap().index = Some(0);
+        s.metadata.as_mut().unwrap().index = 0;
         assert!(s.is_empty());
     }
 

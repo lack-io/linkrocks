@@ -162,18 +162,18 @@ impl<T: Storage> RaftLog<T> {
     /// The index of the given entries MUST be continuously increasing.
     pub async fn find_conflict(&self, ents: &[Entry]) -> u64 {
         for e in ents {
-            if !self.match_term(e.index(), e.term()).await {
-                if e.index() <= self.last_index().await {
+            if !self.match_term(e.index, e.term).await {
+                if e.index <= self.last_index().await {
                     info!(
                         self.unstable.logger,
                         "found conflict at index {index}",
-                        index=e.index();
-                        "existing term" => self.term(e.index()).await.unwrap_or(0),
-                        "conflicting term" => e.term(),
+                        index = e.index;
+                        "existing term" => self.term(e.index).await.unwrap_or(0),
+                        "conflicting term" => e.term,
                     )
                 };
             }
-            return e.index();
+            return e.index;
         }
         0
     }
@@ -341,7 +341,7 @@ impl<T: Storage> RaftLog<T> {
             return self.last_index().await;
         }
 
-        let after = ents[0].index() - 1;
+        let after = ents[0].index - 1;
         if after < self.committed {
             fatal!(
                 self.unstable.logger,
@@ -450,7 +450,7 @@ impl<T: Storage> RaftLog<T> {
     pub async fn snapshot(&self, request_index: u64, to: u64) -> Result<Snapshot> {
         if let Some(snap) = self.unstable.snapshot.as_ref() {
             if let Some(meta) = snap.metadata.as_ref() {
-                if meta.index() >= request_index {
+                if meta.index >= request_index {
                     return Ok(snap.clone());
                 }
             }
@@ -517,7 +517,7 @@ impl<T: Storage> RaftLog<T> {
         // because the first_update_index means there are snapshot or some entries whose indexes
         // are greater than or equal to the first_update_index have not been persisted yet.
         let first_update_index = match &self.unstable.snapshot {
-            Some(s) => s.metadata.as_ref().unwrap().index(),
+            Some(s) => s.metadata.as_ref().unwrap().index,
             None => self.unstable.offset,
         };
         if index > self.persisted
@@ -624,10 +624,10 @@ impl<T: Storage> RaftLog<T> {
             self.unstable.logger,
             "log [{log}] starts to restore snapshot [index: {snapshot_index}, term: {snapshot_term}]",
             log = self.to_string(),
-            snapshot_index = meta.index(),
-            snapshot_term = meta.term(),
+            snapshot_index = meta.index,
+            snapshot_term = meta.term,
         );
-        let index = meta.index();
+        let index = meta.index;
         assert!(index >= self.committed, "{} < {}", index, self.committed);
         // If `persisted` is greater than `committed`, reset it to `committed`.
         // It's because only the persisted entries whose index are less than `commited` can be
