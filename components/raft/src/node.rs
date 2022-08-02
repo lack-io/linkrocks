@@ -1,106 +1,14 @@
-use crate::{errors::Result, raft::StateType, read_only::ReadState, status::Status};
-
-use raftpb::{
-    prelude::{Entry, HardState, Message, Snapshot},
-    ConfChangeI,
+use crate::{
+    errors::Result,
+    raw_node::{Ready, SnapshotStatus},
+    status::Status,
 };
+
+use raftpb::ConfChangeI;
 use tokio_context::context::Context;
 
 use async_trait::async_trait;
 use tokio::sync::broadcast::Receiver;
-
-pub enum SnapshotStatus {
-    SnapshotFinish,
-    SnapshotFailure,
-}
-
-#[derive(Debug, Default)]
-/// SoftState provides state that is useful for logging and debugging.
-/// The state is volatile and does not need to be persisted to the WAL.
-pub struct SoftState {
-    // must use atomic operations to access; keep 64-bit aligned.
-    pub leader_id: u64,
-    pub raft_state: StateType,
-}
-
-impl PartialEq for SoftState {
-    fn eq(&self, other: &Self) -> bool {
-        self.leader_id == other.leader_id && self.raft_state == other.raft_state
-    }
-}
-
-/// Ready encapsulates the entries and messages that are ready to read,
-/// be saved to stable storage, committed or sent to other peers.
-/// All fields in Ready are read-only.
-pub struct Ready {
-    /// The current volatile state of a Node.
-    /// SoftState will be None if there is no update.
-    /// It is not required to consume or store SoftState.
-    soft_state: Option<SoftState>,
-
-    /// The current state of a Node to be saved to stable storage BEFORE
-    /// Messages are sent.
-    /// HardState will be equal to empty state if there is no update.
-    hard_state: HardState,
-
-    /// read_states can be used for node to serve linearizable read requests locally
-    /// when its applied index is greater than the index in ReadState.
-    /// Note that the readState will be returned when raft receives msgReadIndex.
-    /// The returned is only valid for the request that requested to read.
-    read_states: Vec<ReadState>,
-
-    /// entries specifies entries to be saved to stable storage BEFORE
-    /// Messages are sent.
-    entries: Vec<Entry>,
-
-    /// snapshot specifies the snapshot to be saved to stable storage.
-    snapshot: Snapshot,
-
-    /// committed_entries specifies entries to be committed to a
-    /// store/state-machine. These have previously been committed to stable
-    /// store.
-    committed_entries: Vec<Entry>,
-
-    /// messages specifies outbound messages to be sent AFTER Entries are
-    /// committed to stable storage.
-    /// If it contains a MsgSnap message, the application MUST report back to raft
-    /// when the snapshot has been received or has failed by calling ReportSnapshot.
-    messages: Vec<Message>,
-
-    /// must_sync indicates whether the HardState and Entries must be synchronously
-    /// written to disk or if an asynchronous write is permissible.
-    must_sync: bool,
-}
-
-impl Ready {
-    fn contains_updates(&self) -> bool {
-        self.soft_state.is_none()
-            || !self.hard_state.is_empty()
-            || !self.snapshot.is_empty()
-            || self.entries.len() > 0
-            || self.committed_entries.len() > 0
-            || self.messages.len() > 0
-            || self.read_states.len() != 0
-    }
-
-    // applied_cursor extracts from the Ready the highest index the client has
-    // applied (once the Ready is confirmed via advance). If no information is
-    // contained in the Ready, returns zero.
-    fn applied_cursor(&self) -> u64 {
-        let n = self.committed_entries.len();
-        if n > 0 {
-            return self.committed_entries[n - 1].index.unwrap();
-        }
-        if let Some(ref metadata) = self.snapshot.metadata {
-            if let Some(index) = metadata.index {
-                if index > 0 {
-                    return index;
-                }
-            }
-        }
-        0
-    }
-}
 
 /// Node represents a node in raft cluster.
 #[async_trait]
@@ -181,14 +89,4 @@ pub trait Node {
 
     /// Stop performs any necessary termination of the Node.
     async fn stop(&self);
-}
-
-#[derive(Debug, Clone)]
-pub struct Peer {
-    id: u64,
-    context: Vec<u8>,
-}
-
-pub struct node {
-
 }

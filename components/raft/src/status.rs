@@ -1,6 +1,6 @@
 use raftpb::prelude::HardState;
 
-use crate::{node::SoftState, tracker::ProgressTracker, storage::Storage, raft::{Raft, StateType}};
+use crate::{raft::SoftState, tracker::ProgressTracker, storage::Storage, raft::{Raft, StateType}};
 
 
 /// Status contains information about this Raft peer and its view of the system.

@@ -1,5 +1,8 @@
-use crate::{prelude::{Entry, Snapshot}, util::entry_approximate_size};
-use slog::{crit, info, Logger};
+use crate::{
+    prelude::{Entry, Snapshot},
+    util::entry_approximate_size,
+};
+use slog::Logger;
 
 /// The `unstable.entries[i]` has raft log position `i+unstable.offset`.
 /// Note that `unstable.offset` may be less than the highest log
@@ -46,7 +49,10 @@ impl Unstable {
     /// Returns the last index if it has at least one unstable entry or snapshot.
     pub fn maybe_last_index(&self) -> Option<u64> {
         match self.entries.len() {
-            0 => self.snapshot.as_ref().map(|snap| snap.metadata.as_ref().unwrap().index()),
+            0 => self
+                .snapshot
+                .as_ref()
+                .map(|snap| snap.metadata.as_ref().unwrap().index()),
             len => Some(self.offset + len as u64 - 1),
         }
     }
@@ -193,8 +199,8 @@ impl Unstable {
 
 #[cfg(test)]
 mod test {
-    use crate::prelude::{Entry, Snapshot, SnapshotMetadata};
     use crate::log_unstable::Unstable;
+    use crate::prelude::{Entry, Snapshot, SnapshotMetadata};
     use crate::util::entry_approximate_size;
 
     fn new_entry(index: u64, term: u64) -> Entry {

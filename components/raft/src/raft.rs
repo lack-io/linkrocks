@@ -20,7 +20,6 @@ use crate::{
     confchange::{self, Changer},
     config::Config,
     errors::{Error, Result, StorageError},
-    node::SoftState,
     quorum::VoteResult,
     raft_log::RaftLog,
     read_only::{ReadOnly, ReadOnlyOption, ReadState},
@@ -73,6 +72,16 @@ impl ToString for StateType {
 pub const INVALID_ID: u64 = 0;
 /// A constant represents invalid index of raft log.
 pub const INVALID_INDEX: u64 = 0;
+
+/// SoftState provides state that is useful for logging and debugging.
+/// The state is volatile and does not need to be persisted to the WAL.
+#[derive(Default, PartialEq, Debug)]
+pub struct SoftState {
+    /// The potential leader of the cluster.
+    pub leader_id: u64,
+    /// The soft role this node may take.
+    pub raft_state: StateType,
+}
 
 /// UncommittedState is used to keep track of information of uncommitted
 /// log entries on 'leader' node
@@ -489,7 +498,7 @@ impl<T: Storage> Raft<T> {
     pub async fn enable_group_commit(&mut self, enable: bool) {
         self.mut_prs().enable_group_commit(enable);
         if StateType::Leader == self.state && !enable && self.maybe_commit().await {
-            self.bcast_append();
+            self.bcast_append().await;
         }
     }
 
@@ -872,7 +881,9 @@ impl<T: Storage> Raft<T> {
 
     pub(super) async fn send_append_aggressively(&mut self, to: u64) {
         let pr = self.prs.get_mut(to).unwrap();
-        self.r.send_append(to, pr, &mut self.msgs).await
+        self.r
+            .send_append_aggressively(to, pr, &mut self.msgs)
+            .await
     }
 
     /// Sends RPC, with entries to all peers that are not up-to-date
@@ -2583,7 +2594,10 @@ impl<T: Storage> Raft<T> {
         // Now go ahead and actually restore.
 
         if self.pending_request_snapshot == INVALID_INDEX
-            && self.raft_log.match_term(metadata.index(), metadata.term()).await
+            && self
+                .raft_log
+                .match_term(metadata.index(), metadata.term())
+                .await
         {
             info!(
                 self.logger,
@@ -2604,8 +2618,12 @@ impl<T: Storage> Raft<T> {
             .raft_log
             .pending_snapshot()
             .unwrap()
-            .metadata.as_ref().unwrap()
-            .conf_state.as_ref().unwrap();
+            .metadata
+            .as_ref()
+            .unwrap()
+            .conf_state
+            .as_ref()
+            .unwrap();
 
         self.prs.clear();
         let last_index = self.raft_log.last_index().await;
@@ -2620,8 +2638,12 @@ impl<T: Storage> Raft<T> {
             .raft_log
             .pending_snapshot()
             .unwrap()
-            .metadata.as_ref().unwrap()
-            .conf_state.as_ref().unwrap();
+            .metadata
+            .as_ref()
+            .unwrap()
+            .conf_state
+            .as_ref()
+            .unwrap();
         if !conf_state_eq(cs, &new_cs) {
             fatal!(self.logger, "invalid restore: {:?} != {:?}", cs, new_cs);
         }
@@ -2829,7 +2851,7 @@ impl<T: Storage> Raft<T> {
         self.r.send(m, &mut self.msgs);
     }
 
-    fn handle_ready_read_index(&mut self, mut req: Message, index: u64) -> Option<Message> {
+    fn handle_ready_read_index(&mut self, req: Message, index: u64) -> Option<Message> {
         if req.from() == INVALID_ID || req.from() == self.id {
             let rs = ReadState {
                 index,

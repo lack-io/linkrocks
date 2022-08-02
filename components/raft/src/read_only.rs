@@ -29,7 +29,7 @@ impl Default for ReadOnlyOption {
 // this state from ready, it's also caller's duty to differentiate if this
 // state is what it requests through request_ctx, eg. given a unique id as
 // request_ctx
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ReadState {
     pub index: u64,
     pub request_ctx: Vec<u8>,
