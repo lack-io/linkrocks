@@ -1,4 +1,4 @@
-use std::{cmp::max, sync::Arc};
+use std::{cmp, sync::Arc};
 
 use crate::prelude::{ConfState, Entry, HardState, Snapshot, SnapshotMetadata};
 
@@ -39,7 +39,7 @@ impl RaftState {
 }
 
 /// Records the context of the caller who calls entries() of Storage trait.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GetEntriesContext(pub(crate) GetEntriesFor);
 
 impl GetEntriesContext {
@@ -58,7 +58,7 @@ impl GetEntriesContext {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum GetEntriesFor {
     // for sending entries to followers
     SendAppend {
@@ -79,20 +79,35 @@ pub(crate) enum GetEntriesFor {
     Empty(bool),
 }
 
-/// Storage is an interface that may be implemented by the application
-/// to retrieve log entries from storage.
+/// Storage saves all the information about the current Raft implementation, including Raft Log,
+/// commit index, the leader to vote for, etc.
 ///
-/// If any Storage method returns error, the raft instance will
+/// If any Storage method returns an error, the raft instance will
 /// become inoperable and refuse to participate in elections; the
 /// application is responsible for cleanup and recovery in this case.
 #[async_trait]
 pub trait Storage {
-    /// returns the saved HardState and ConfState information
-    async fn inital_state(&self) -> Result<RaftState>;
+    /// `initial_state` is called when Raft is initialized. This interface will return a `RaftState`
+    /// which contains `HardState` and `ConfState`.
+    ///
+    /// `RaftState` could be initialized or not. If it's initialized it means the `Storage` is
+    /// created with a configuration, and its last index and term should be greater than 0.
+    async fn initial_state(&self) -> Result<RaftState>;
 
-    /// `entries` returns a slice of log entries in the range [low,high].
-    /// MaxSize limits the total size of the log entries returned, but
-    /// Entries returns at least one entry if any.
+    /// Returns a slice of log entries in the range `[low, high)`.
+    /// max_size limits the total size of the log entries returned if not `None`, however
+    /// the slice of entries returned will always have length at least 1 if entries are
+    /// found in the range.
+    ///
+    /// Entries are supported to be fetched asynchorously depending on the context. Async is optional.
+    /// Storage should check context.can_async() first and decide whether to fetch entries asynchorously
+    /// based on its own implementation. If the entries are fetched asynchorously, storage should return
+    /// LogTemporarilyUnavailable, and application needs to call `on_entries_fetched(context)` to trigger
+    /// re-fetch of the entries after the storage finishes fetching the entries.   
+    ///
+    /// # Panics
+    ///
+    /// Panics if `high` is higher than `Storage::last_index(&self) + 1`.
     async fn entries(
         &self,
         low: u64,
@@ -101,35 +116,41 @@ pub trait Storage {
         context: GetEntriesContext,
     ) -> Result<Vec<Entry>>;
 
-    /// `term` returns the term of entry i, which must be in the range
+    /// Returns the term of entry idx, which must be in the range
     /// [first_index()-1, last_index()]. The term of the entry before
-    /// first_index is retained for matching purposes even though the
-    /// rest of that entry amy not be avaiable.
-    async fn term(&self, i: u64) -> Result<u64>;
+    /// first_index is retained for matching purpose even though the
+    /// rest of that entry may not be available.
+    async fn term(&self, idx: u64) -> Result<u64>;
 
-    /// `last_index` retruns the index of the last entry in the log.
-    async fn last_index(&self) -> Result<u64>;
-
-    /// `first_index` returns the index of the first log entry that is
-    /// possibly available via `entries` (older entries have been incorporated)
-    /// into the latest `snapshot`; if storage only contains the dummy entry the
-    /// first log entry is not available).
+    /// Returns the index of the first log entry that is possible available via entries, which will
+    /// always equal to `truncated index` plus 1.
+    ///
+    /// New created (but not initialized) `Storage` can be considered as truncated at 0 so that 1
+    /// will be returned in this case.
     async fn first_index(&self) -> Result<u64>;
 
-    /// `snapshot` returns the most recent snapshot.
-    /// If snapshot is temporarily unavailable, it should return StorageError::SnapshotTemporarilyUnavailable
-    /// snapshot and call `snapshot` later.
+    /// The index of the last entry replicated in the `Storage`.
+    async fn last_index(&self) -> Result<u64>;
+
+    /// Returns the most recent snapshot.
+    ///
+    /// If snapshot is temporarily unavailable, it should return SnapshotTemporarilyUnavailable,
+    /// so raft state machine could know that Storage needs some time to prepare
+    /// snapshot and call snapshot later.
+    /// A snapshot's index must not less than the `request_index`.
+    /// `to` indicates which peer is requesting the snapshot.
     async fn snapshot(&self, request_index: u64, to: u64) -> Result<Snapshot>;
 }
 
-/// MemStorage implements the `Storage` trait backed by an in-memory array.
-#[derive(Debug, Clone, Default)]
+/// The Memory Storage Core instance holds the actual state of the storage struct. To access this
+/// value, use the `rl` and `wl` functions on the main MemStorage implementation.
+#[derive(Default)]
 pub struct MemStorageCore {
     raft_state: RaftState,
+    // entries[i] has raft log position i+snapshot.get_metadata().index
+    entries: Vec<Entry>,
+    // Metadata of the last snapshot received.
     snapshot_metadata: SnapshotMetadata,
-    /// ents[i] has raft log position i+snapshot.metadata.index()
-    ents: Vec<Entry>,
-
     // If it is true, the next snapshot will return a
     // SnapshotTemporarilyUnavailable error.
     trigger_snap_unavailable: bool,
@@ -140,13 +161,13 @@ pub struct MemStorageCore {
 }
 
 impl MemStorageCore {
-    fn new() -> Self {
+    pub fn new() -> Self {
         MemStorageCore {
             ..Default::default()
         }
     }
 
-    /// Saves the current HardState
+    /// Saves the current HardState.
     pub fn set_hardstate(&mut self, hs: HardState) {
         self.raft_state.hard_state = hs;
     }
@@ -161,103 +182,55 @@ impl MemStorageCore {
         &mut self.raft_state.hard_state
     }
 
-    /// Saves the current conf state
+    /// Commit to an index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no such entry in raft logs.
+    pub fn commit_to(&mut self, index: u64) -> Result<()> {
+        assert!(
+            self.has_entry_at(index),
+            "commit_to {} but the entry does not exist",
+            index
+        );
+
+        let diff = (index - self.entries[0].index) as usize;
+        self.raft_state.hard_state.commit = index;
+        self.raft_state.hard_state.term = self.entries[diff].term;
+        Ok(())
+    }
+
+    /// Saves the current conf state.
     pub fn set_conf_state(&mut self, cs: ConfState) {
         self.raft_state.conf_state = cs;
     }
 
-    pub fn entries(
-        &mut self,
-        low: u64,
-        high: u64,
-        max_size: Option<u64>,
-        context: GetEntriesContext,
-    ) -> Result<Vec<Entry>> {
-        if low < self.first_index() {
-            return Err(Error::Store(StorageError::Compacted));
-        }
-        if high > self.last_index() + 1 {
-            panic!(
-                "index out of bound (last: {}, high: {})",
-                self.last_index() + 1,
-                high,
-            )
-        }
-        if self.trigger_log_unavailable && context.can_async() {
-            self.get_entries_context = Some(context);
-            return Err(Error::Store(StorageError::LogTemporarilyUnavailable));
-        }
-
-        let offset = self.ents[0].index;
-        let mut entries: Vec<Entry> =
-            self.ents[(low - offset) as usize..(high - offset) as usize].to_vec();
-        limit_size(&mut entries, max_size);
-        Ok(entries)
-    }
-
-    pub fn term(&self, i: u64) -> Result<u64> {
-        let offset = self.first_index();
-        if i < offset {
-            return Err(Error::Store(StorageError::Compacted));
-        }
-        let at = (i - offset) as usize;
-        if at >= self.ents.len() {
-            return Err(Error::Store(StorageError::Unavailable));
-        }
-        Ok(self.ents[at].term)
-    }
-
-    pub fn snapshot(&self) -> Snapshot {
-        let mut snapshot = Snapshot::default();
-
-        let mut meta = SnapshotMetadata::default();
-        meta.index = self.raft_state.hard_state.commit;
-        meta.term = match meta.index.cmp(&self.snapshot_metadata.index) {
-            std::cmp::Ordering::Equal => self.snapshot_metadata.term,
-            std::cmp::Ordering::Greater => {
-                let offset = self.ents[0].index;
-                self.ents[(meta.index - offset) as usize].term
-            }
-            std::cmp::Ordering::Less => {
-                panic!(
-                    "commit {} < snapshot_metadata.index {}",
-                    meta.index,
-                    self.snapshot_metadata.index
-                )
-            }
-        };
-
-        meta.conf_state = Some(self.raft_state.conf_state.clone());
-        snapshot.metadata = Some(meta);
-        snapshot
-    }
-
     #[inline]
     fn has_entry_at(&self, index: u64) -> bool {
-        !self.ents.is_empty() && index >= self.first_index() && index <= self.last_index()
+        !self.entries.is_empty() && index >= self.first_index() && index <= self.last_index()
     }
 
     fn first_index(&self) -> u64 {
-        match self.ents.first() {
+        match self.entries.first() {
             Some(e) => e.index,
             None => self.snapshot_metadata.index + 1,
         }
     }
 
     fn last_index(&self) -> u64 {
-        match self.ents.last() {
+        match self.entries.last() {
             Some(e) => e.index,
             None => self.snapshot_metadata.index,
         }
     }
 
-    // Overwrites the contents of this Storage object with those of the given snapshot.
+    /// Overwrites the contents of this Storage object with those of the given snapshot.
     ///
     /// # Panics
     ///
     /// Panics if the snapshot index is less than the storage's first index.
-    pub fn apply_snapshot(&mut self, snap: Snapshot) -> Result<()> {
-        let meta = snap.metadata.unwrap();
+    pub fn apply_snapshot(&mut self, mut snapshot: Snapshot) -> Result<()> {
+        let mut meta = snapshot.take_metadata();
         let index = meta.index;
 
         if self.first_index() > index {
@@ -266,18 +239,48 @@ impl MemStorageCore {
 
         self.snapshot_metadata = meta.clone();
 
-        self.raft_state.hard_state.term = max(self.raft_state.hard_state.term, meta.term);
+        self.raft_state.hard_state.term = cmp::max(self.raft_state.hard_state.term, meta.term);
         self.raft_state.hard_state.commit = index;
-        self.ents.clear();
+        self.entries.clear();
 
         // Update conf states.
-        self.raft_state.conf_state = meta.conf_state.unwrap_or_else(|| ConfState::default());
+        self.raft_state.conf_state = meta.take_conf_state();
         Ok(())
     }
 
-    /// discards all log entries prior to compact_index.
+    fn snapshot(&self) -> Snapshot {
+        let mut snapshot = Snapshot::default();
+
+        // We assume all entries whose indexes are less than `hard_state.commit`
+        // have been applied, so use the latest commit index to construct the snapshot.
+        // TODO: This is not true for async ready.
+        let meta = snapshot.metadata.as_mut().unwrap();
+        meta.index = self.raft_state.hard_state.commit;
+        meta.term = match meta.index.cmp(&self.snapshot_metadata.index) {
+            cmp::Ordering::Equal => self.snapshot_metadata.term,
+            cmp::Ordering::Greater => {
+                let offset = self.entries[0].index;
+                self.entries[(meta.index - offset) as usize].term
+            }
+            cmp::Ordering::Less => {
+                panic!(
+                    "commit {} < snapshot_metadata.index {}",
+                    meta.index, self.snapshot_metadata.index
+                );
+            }
+        };
+
+        meta.conf_state = Some(self.raft_state.conf_state.clone());
+        snapshot
+    }
+
+    /// Discards all log entries prior to compact_index.
     /// It is the application's responsibility to not attempt to compact an index
-    /// greater than raftLog.applied.
+    /// greater than RaftLog.applied.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `compact_index` is higher than `Storage::last_index(&self) + 1`.
     pub fn compact(&mut self, compact_index: u64) -> Result<()> {
         if compact_index <= self.first_index() {
             // Don't need to treat this case as an error.
@@ -292,12 +295,44 @@ impl MemStorageCore {
             );
         }
 
-        if let Some(entry) = self.ents.first() {
+        if let Some(entry) = self.entries.first() {
             let offset = compact_index - entry.index;
-            self.ents.drain(..offset as usize);
+            self.entries.drain(..offset as usize);
+        }
+        Ok(())
+    }
+
+    fn entries(
+        &mut self,
+        low: u64,
+        high: u64,
+        max_size: impl Into<Option<u64>>,
+        context: GetEntriesContext,
+    ) -> Result<Vec<Entry>> {
+        let max_size = max_size.into();
+        if low < self.first_index() {
+            return Err(Error::Store(StorageError::Compacted));
         }
 
-        Ok(())
+        if high > self.last_index() + 1 {
+            panic!(
+                "index out of bound (last: {}, high: {})",
+                self.last_index() + 1,
+                high
+            );
+        }
+
+        if self.trigger_log_unavailable && context.can_async() {
+            self.get_entries_context = Some(context);
+            return Err(Error::Store(StorageError::LogTemporarilyUnavailable));
+        }
+
+        let offset = self.entries[0].index;
+        let lo = (low - offset) as usize;
+        let hi = (high - offset) as usize;
+        let mut ents = self.entries[lo..hi].to_vec();
+        limit_size(&mut ents, max_size);
+        Ok(ents)
     }
 
     /// Append the new entries to storage.
@@ -321,15 +356,23 @@ impl MemStorageCore {
             panic!(
                 "raft logs should be continuous, last index: {}, new appended: {}",
                 self.last_index(),
-                ents[0].index
+                ents[0].index,
             );
         }
 
         // Remove all entries overwritten by `ents`.
         let diff = ents[0].index - self.first_index();
-        self.ents.drain(diff as usize..);
-        self.ents.extend_from_slice(ents);
+        self.entries.drain(diff as usize..);
+        self.entries.extend_from_slice(ents);
+        Ok(())
+    }
 
+    /// Commit to `idx` and set configuration to the given states. Only used for tests.
+    pub fn commit_to_and_set_conf_states(&mut self, idx: u64, cs: Option<ConfState>) -> Result<()> {
+        self.commit_to(idx)?;
+        if let Some(cs) = cs {
+            self.raft_state.conf_state = cs;
+        }
         Ok(())
     }
 
@@ -347,91 +390,80 @@ impl MemStorageCore {
     pub fn take_get_entries_context(&mut self) -> Option<GetEntriesContext> {
         self.get_entries_context.take()
     }
-
-    /// makes a snapshot which can be retrieved with `snapshot()` and
-    /// can be used to reconstruct the state at that point.
-    /// If any configuration changes have been made since the last compaction,
-    /// the result of the last apply_conf_change must be passed in.
-    pub fn create_snapshot(
-        &mut self,
-        i: u64,
-        cs: Option<ConfState>,
-        data: &[u8],
-    ) -> Result<Snapshot> {
-        if i <= self.snapshot_metadata.index {
-            return Err(Error::Store(StorageError::SnapshotOutOfDate));
-        }
-
-        let offset = self.first_index();
-        if i > self.last_index() {
-            return Err(Error::Store(StorageError::SnapshotTemporarilyUnavailable));
-        }
-
-        self.snapshot_metadata.index = i;
-        self.snapshot_metadata.term = self.ents[(i - offset) as usize].term;
-        if let Some(conf_state) = cs {
-            self.raft_state.conf_state = conf_state;
-        }
-
-        let snapshot = Snapshot {
-            metadata: Some(self.snapshot_metadata.clone()),
-            data: data.to_vec(),
-        };
-        Ok(snapshot)
-    }
 }
 
-/// `MemStorage` is a thread-safe but incomplete implementation of `Storage`.
-#[derive(Debug, Clone, Default)]
+/// `MemStorage` is a thread-safe but incomplete implementation of `Storage`, mainly for tests.
+///
+/// A real `Storage` should save both raft logs and applied data. However `MemStorage` only
+/// contains raft logs. So you can call `MemStorage::append` to persist new received unstable raft
+/// logs and then access them with `Storage` APIs. The only exception is `Storage::snapshot`. There
+/// is no data in `Snapshot` returned by `MemStorage::snapshot` because applied data is not stored
+/// in `MemStorage`.
+#[derive(Clone, Default)]
 pub struct MemStorage {
     core: Arc<RwLock<MemStorageCore>>,
 }
 
 impl MemStorage {
     /// Returns a new memory storage value.
-    pub fn new() -> Self {
+    pub fn new() -> MemStorage {
         MemStorage {
             ..Default::default()
         }
     }
 
-    /// Opens up a read lock on the storage and returns a gurad handle. Use this
-    /// with functions that don't required mutation.
+    /// Create a new `MemStorage` with a given `Config`. The given `Config` will be used to
+    /// initialize the storage.
+    ///
+    /// You should use the same input to initialize all nodes.
+    pub async fn new_with_conf_state<T>(conf_state: T) -> MemStorage
+    where
+        ConfState: From<T>,
+    {
+        let store = MemStorage::new();
+        store.initialize_with_conf_state(conf_state).await;
+        store
+    }
+
+    /// Initialize a `MemStorage` with a given `Config`.
+    ///
+    /// You should use the same input to initialize all nodes.
+    pub async fn initialize_with_conf_state<T>(&self, conf_state: T)
+    where
+        ConfState: From<T>,
+    {
+        assert!(!self.initial_state().await.unwrap().initialized());
+        let mut core = self.wl().await;
+        // Setting initial state is very important to build a correct raft, as raft algorithm
+        // itself only guarantees logs consistency. Typically, you need to ensure either all start
+        // states are the same on all nodes, or new nodes always catch up logs by snapshot first.
+        //
+        // In practice, we choose the second way by assigning non-zero index to first index. Here
+        // we choose the first way for historical reason and easier to write tests.
+        core.raft_state.conf_state = ConfState::from(conf_state);
+    }
+
+    /// Opens up a read lock on the storage and returns a guard handle. Use this
+    /// with functions that don't require mutation.
     pub async fn rl(&self) -> RwLockReadGuard<'_, MemStorageCore> {
         self.core.read().await
     }
 
-    /// Opens up a write lock on the storage and returns gurad handle. Use this
+    /// Opens up a write lock on the storage and returns guard handle. Use this
     /// with functions that take a mutable reference to self.
     pub async fn wl(&self) -> RwLockWriteGuard<'_, MemStorageCore> {
         self.core.write().await
-    }
-
-    pub async fn apply_snapshot(&mut self, snap: Snapshot) -> Result<()> {
-        let mut core = self.wl().await;
-        core.apply_snapshot(snap)?;
-        Ok(())
-    }
-
-    pub async fn compact(&mut self, compact_index: u64) -> Result<()> {
-        let mut core = self.wl().await;
-        core.compact(compact_index)?;
-        Ok(())
-    }
-
-    pub async fn append(&mut self, ents: &[Entry]) -> Result<()> {
-        let mut core = self.wl().await;
-        core.append(ents)?;
-        Ok(())
     }
 }
 
 #[async_trait]
 impl Storage for MemStorage {
-    async fn inital_state(&self) -> Result<RaftState> {
-        Ok(self.rl().await.clone().raft_state)
+    /// Implements the Storage trait.
+    async fn initial_state(&self) -> Result<RaftState> {
+        Ok(self.rl().await.raft_state.clone())
     }
 
+    /// Implements the Storage trait.
     async fn entries(
         &self,
         low: u64,
@@ -439,24 +471,39 @@ impl Storage for MemStorage {
         max_size: Option<u64>,
         context: GetEntriesContext,
     ) -> Result<Vec<Entry>> {
-        self.rl()
-            .await
-            .clone()
-            .entries(low, high, max_size, context)
+        let mut core = self.wl().await;
+        core.entries(low, high, max_size, context)
     }
 
-    async fn term(&self, i: u64) -> Result<u64> {
-        self.rl().await.clone().term(i)
+    /// Implements the Storage trait.
+    async fn term(&self, idx: u64) -> Result<u64> {
+        let core = self.rl().await;
+        if idx == core.snapshot_metadata.index {
+            return Ok(core.snapshot_metadata.term);
+        }
+
+        let offset = core.first_index();
+        if idx < offset {
+            return Err(Error::Store(StorageError::Compacted));
+        }
+
+        if idx > core.last_index() {
+            return Err(Error::Store(StorageError::Unavailable));
+        }
+        Ok(core.entries[(idx - offset) as usize].term)
     }
 
-    async fn last_index(&self) -> Result<u64> {
-        Ok(self.rl().await.clone().last_index())
-    }
-
+    /// Implements the Storage trait.
     async fn first_index(&self) -> Result<u64> {
-        Ok(self.rl().await.clone().first_index())
+        Ok(self.rl().await.first_index())
     }
 
+    /// Implements the Storage trait.
+    async fn last_index(&self) -> Result<u64> {
+        Ok(self.rl().await.last_index())
+    }
+
+    /// Implements the Storage trait.
     async fn snapshot(&self, request_index: u64, _to: u64) -> Result<Snapshot> {
         let mut core = self.wl().await;
         if core.trigger_snap_unavailable {
@@ -464,320 +511,10 @@ impl Storage for MemStorage {
             Err(Error::Store(StorageError::SnapshotTemporarilyUnavailable))
         } else {
             let mut snap = core.snapshot();
-            let mut meta = snap.metadata.unwrap();
-            if meta.index < request_index {
-                meta.index = request_index;
+            if snap.take_metadata().index < request_index {
+                snap.take_metadata().index = request_index;
             }
-            snap.metadata = Some(meta);
             Ok(snap)
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::panic::{self, AssertUnwindSafe};
-
-    use prost::Message as PbMessage;
-
-    use crate::errors::{Error as RaftError, StorageError};
-    use raftpb::prelude::{ConfState, Entry, Snapshot, SnapshotMetadata};
-
-    use super::{GetEntriesContext, MemStorage, MemStorageCore};
-
-    fn new_entry(index: u64, term: u64) -> Entry {
-        let mut e = Entry::default();
-        e.term = term;
-        e.index = index;
-        e
-    }
-
-    fn size_of<T: PbMessage>(m: &T) -> u32 {
-        m.encoded_len() as u32
-    }
-
-    fn new_snapshot(index: u64, term: u64, voters: Vec<u64>) -> Snapshot {
-        let mut s = Snapshot::default();
-        let mut meta = SnapshotMetadata::default();
-        meta.index = index;
-        meta.term = term;
-        if let Some(ref mut conf_state) = meta.conf_state {
-            conf_state.voters = voters;
-        };
-        s.metadata = Some(meta);
-        s.data = (&[]).to_vec();
-        s
-    }
-
-    #[test]
-    fn test_storage_term() {
-        let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
-        let mut tests = vec![
-            (2, Err(RaftError::Store(StorageError::Compacted))),
-            (3, Ok(3)),
-            (4, Ok(4)),
-            (5, Ok(5)),
-            (6, Err(RaftError::Store(StorageError::Unavailable))),
-        ];
-
-        for (i, (idx, wterm)) in tests.drain(..).enumerate() {
-            let mut storage = MemStorageCore::new();
-            storage.ents = ents.clone();
-
-            let t = storage.term(idx);
-            if t != wterm {
-                panic!("#{}: expect res {:?}, got {:?}", i, wterm, t);
-            }
-        }
-    }
-
-    #[test]
-    fn test_storage_entries() {
-        let ents = vec![
-            new_entry(3, 3),
-            new_entry(4, 4),
-            new_entry(5, 5),
-            new_entry(6, 6),
-        ];
-        let max_u64 = u64::max_value();
-        let mut tests = vec![
-            (
-                2,
-                6,
-                max_u64,
-                Err(RaftError::Store(StorageError::Compacted)),
-            ),
-            (3, 4, max_u64, Ok(vec![new_entry(3, 3)])),
-            (4, 5, max_u64, Ok(vec![new_entry(4, 4)])),
-            (4, 6, max_u64, Ok(vec![new_entry(4, 4), new_entry(5, 5)])),
-            (
-                4,
-                7,
-                max_u64,
-                Ok(vec![new_entry(4, 4), new_entry(5, 5), new_entry(6, 6)]),
-            ),
-            // even if maxsize is zero, the first entry should be returned
-            (4, 7, 0, Ok(vec![new_entry(4, 4)])),
-            // limit to 2
-            (
-                4,
-                7,
-                u64::from(size_of(&ents[1]) + size_of(&ents[2])),
-                Ok(vec![new_entry(4, 4), new_entry(5, 5)]),
-            ),
-            (
-                4,
-                7,
-                u64::from(size_of(&ents[1]) + size_of(&ents[2]) + size_of(&ents[3]) / 2),
-                Ok(vec![new_entry(4, 4), new_entry(5, 5)]),
-            ),
-            (
-                4,
-                7,
-                u64::from(size_of(&ents[1]) + size_of(&ents[2]) + size_of(&ents[3]) - 1),
-                Ok(vec![new_entry(4, 4), new_entry(5, 5)]),
-            ),
-            // all
-            (
-                4,
-                7,
-                u64::from(size_of(&ents[1]) + size_of(&ents[2]) + size_of(&ents[3])),
-                Ok(vec![new_entry(4, 4), new_entry(5, 5), new_entry(6, 6)]),
-            ),
-        ];
-        for (i, (lo, hi, maxsize, wentries)) in tests.drain(..).enumerate() {
-            let mut storage = MemStorageCore::new();
-            storage.ents = ents.clone();
-            let e = storage.entries(lo, hi, Some(maxsize), GetEntriesContext::empty(false));
-            if e != wentries {
-                panic!("#{}: expect entries {:?}, got {:?}", i, wentries, e);
-            }
-        }
-    }
-
-    #[test]
-    fn test_storage_last_index() {
-        let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
-        let mut storage = MemStorageCore::new();
-        storage.ents = ents;
-
-        let wresult = 5;
-        let result = storage.last_index();
-        if result != wresult {
-            panic!("want {:?}, got {:?}", wresult, result);
-        }
-
-        storage.append(&[new_entry(6, 5)]).unwrap();
-        let wresult = 6;
-        let result = storage.last_index();
-        if result != wresult {
-            panic!("want {:?}, got {:?}", wresult, result);
-        }
-    }
-
-    #[test]
-    fn test_storage_first_index() {
-        let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
-        let mut storage = MemStorageCore::new();
-        storage.ents = ents;
-
-        assert_eq!(storage.first_index(), 3);
-        storage.compact(4).unwrap();
-        assert_eq!(storage.first_index(), 4);
-    }
-
-    #[test]
-    fn test_storage_compact() {
-        let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
-        let mut tests = vec![(2, 3, 3, 3), (3, 3, 3, 3), (4, 4, 4, 2), (5, 5, 5, 1)];
-        for (i, (idx, windex, wterm, wlen)) in tests.drain(..).enumerate() {
-            let mut storage = MemStorageCore::new();
-            storage.ents = ents.clone();
-
-            storage.compact(idx).unwrap();
-            let index = storage.first_index();
-            if index != windex {
-                panic!("#{}: want {}, index {}", i, windex, index);
-            }
-            let term = if let Ok(v) =
-                storage.entries(index, index + 1, Some(1), GetEntriesContext::empty(false))
-            {
-                v.first().map_or(0, |e| e.term)
-            } else {
-                0
-            };
-            if term != wterm {
-                panic!("#{}: want {}, term {}", i, wterm, term);
-            }
-            let last = storage.last_index();
-            let len = storage
-                .entries(index, last + 1, Some(100), GetEntriesContext::empty(false))
-                .unwrap()
-                .len();
-            if len != wlen {
-                panic!("#{}: want {}, term {}", i, wlen, len);
-            }
-        }
-    }
-
-    #[test]
-    fn test_storage_create_snapshot() {
-        let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
-        let nodes = vec![1, 2, 3];
-        let mut conf_state = ConfState::default();
-        conf_state.voters = nodes.clone();
-
-        let unavailable = Err(RaftError::Store(
-            StorageError::SnapshotTemporarilyUnavailable,
-        ));
-        let mut tests = vec![
-            (4, Ok(new_snapshot(4, 4, nodes.clone()))),
-            (5, Ok(new_snapshot(5, 5, nodes.clone()))),
-            (6, unavailable),
-        ];
-        for (i, (idx, wresult)) in tests.drain(..).enumerate() {
-            let mut storage = MemStorageCore::new();
-            storage.ents = ents.clone();
-            storage.raft_state.hard_state.commit = idx;
-            storage.raft_state.hard_state.term = idx;
-            storage.raft_state.conf_state = conf_state.clone();
-
-            let result = storage.create_snapshot(idx, None, &[]);
-            if result != wresult {
-                panic!("#{}: want {:?}, got {:?}", i, wresult, result);
-            }
-        }
-    }
-
-    #[test]
-    fn test_storage_append() {
-        let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
-        let mut tests = vec![
-            (
-                vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)],
-                Some(vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)]),
-            ),
-            (
-                vec![new_entry(3, 3), new_entry(4, 6), new_entry(5, 6)],
-                Some(vec![new_entry(3, 3), new_entry(4, 6), new_entry(5, 6)]),
-            ),
-            (
-                vec![
-                    new_entry(3, 3),
-                    new_entry(4, 4),
-                    new_entry(5, 5),
-                    new_entry(6, 5),
-                ],
-                Some(vec![
-                    new_entry(3, 3),
-                    new_entry(4, 4),
-                    new_entry(5, 5),
-                    new_entry(6, 5),
-                ]),
-            ),
-            // overwrite compacted raft logs is not allowed
-            (
-                vec![new_entry(2, 3), new_entry(3, 3), new_entry(4, 5)],
-                None,
-            ),
-            // truncate the existing entries and append
-            (
-                vec![new_entry(4, 5)],
-                Some(vec![new_entry(3, 3), new_entry(4, 5)]),
-            ),
-            // direct append
-            (
-                vec![new_entry(6, 6)],
-                Some(vec![
-                    new_entry(3, 3),
-                    new_entry(4, 4),
-                    new_entry(5, 5),
-                    new_entry(6, 6),
-                ]),
-            ),
-        ];
-        for (i, (entries, wentries)) in tests.drain(..).enumerate() {
-            let mut storage = MemStorageCore::new();
-            storage.ents = ents.clone();
-            let res = panic::catch_unwind(AssertUnwindSafe(|| storage.append(&entries)));
-            if let Some(wentries) = wentries {
-                let _ = res.unwrap();
-                let e = &storage.ents;
-                if *e != wentries {
-                    panic!("#{}: want {:?}, entries {:?}", i, wentries, e);
-                }
-            } else {
-                res.unwrap_err();
-            }
-        }
-    }
-
-    #[test]
-    fn test_storage_apply_snapshot() {
-        let nodes = vec![1, 2, 3];
-        let mut storage = MemStorageCore::new();
-
-        // Apply snapshot successfully
-        let snap = new_snapshot(4, 4, nodes.clone());
-        storage.apply_snapshot(snap).unwrap();
-
-        // Apply snapshot fails due to StorageError::SnapshotOutOfDate
-        let snap = new_snapshot(3, 3, nodes);
-        let e = storage.apply_snapshot(snap);
-        println!("{:?}", e);
-    }
-
-    #[tokio::test]
-    async fn test_async_storage_apply_snapshot() {
-        let nodes = vec![1, 2, 3];
-        let mut storage = MemStorage::new();
-
-        // Apply snapshot successfully
-        let snap = new_snapshot(4, 4, nodes.clone());
-        storage.apply_snapshot(snap).await.unwrap();
-
-        // Apply snapshot fails due to StorageError::SnapshotOutOfDate
-        let snap = new_snapshot(3, 3, nodes);
-        storage.apply_snapshot(snap).await.unwrap_err();
     }
 }

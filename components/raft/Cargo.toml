@@ -24,12 +24,17 @@ tokio-context = { path = "../tokio-context" }
 raftpb = { path = "../raftpb" }
 
 [dev-dependencies]
+regex = "1"
 slog = "2.7"
 slog-stdlog = "4.1.1"
 slog-envlogger = "2.2.0"
 slog-term = "2.9.0"
-# slog-async = "2.7.0"
-# thiserror = "1.0.31"
+slog-async = "2.7.0"
+thiserror = "1.0.31"
 tokio = { version = "1.20", features = ["macros", "sync", "time", "rt", "rt-multi-thread"] }
 itertools = "0.10.3"
 # futures = "0.3"
+
+[[example]]
+name = "single_mem_node"
+path = "examples/single_mem_node/main.rs"

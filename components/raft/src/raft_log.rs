@@ -61,12 +61,14 @@ impl<T: Storage> RaftLog<T> {
         let first_index = store.first_index().await.unwrap();
         let last_index = store.last_index().await.unwrap();
 
+        assert!(true);
+
         // Initialize committed and applied pointers to the imte of the last compaction.
         RaftLog {
             store,
             unstable: Unstable::new(last_index + 1, logger),
             committed: first_index - 1,
-            persisted: last_index - 1,
+            persisted: last_index,
             applied: first_index - 1,
         }
     }
@@ -325,9 +327,14 @@ impl<T: Storage> RaftLog<T> {
         &self.unstable
     }
 
-    /// Retruns slice of entries that are not persisted.
+    /// Returns slice of entries that are not persisted.
     pub fn unstable_entries(&self) -> &[Entry] {
         &self.unstable.entries
+    }
+
+    /// Returns the snapshot that are not persisted.
+    pub fn unstable_snapshot(&self) -> &Option<Snapshot> {
+        &self.unstable.snapshot
     }
 
     /// Returns the snapshot that are not persisted.

@@ -138,7 +138,7 @@ impl Inflights {
     /// Frees the first buffer entry.
     #[inline]
     pub fn free_first_one(&mut self) {
-        if self.count >= 0 {
+        if self.count > 0 {
             let start = self.buffer[self.start];
             self.free_to(start);
         }

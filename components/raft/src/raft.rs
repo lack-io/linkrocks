@@ -308,7 +308,7 @@ impl<T: Storage> Raft<T> {
     pub async fn new(c: &Config, store: T, logger: &Logger) -> Result<Self> {
         c.validate()?;
         let logger = logger.new(o!("raft_id" => c.id));
-        let raft_state = store.inital_state().await?;
+        let raft_state = store.initial_state().await?;
         let conf_state = &raft_state.conf_state;
         let voters = &conf_state.voters;
         let learners = &conf_state.learners;

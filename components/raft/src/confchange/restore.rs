@@ -81,7 +81,7 @@ fn to_conf_change_single(cs: &ConfState) -> (Vec<ConfChangeSingle>, Vec<ConfChan
             ConfChangeType::ConfChangeAddLearnerNode,
         ));
     }
-    (incoming, outgoing)
+    (outgoing, incoming)
 }
 
 /// Restore takes a Changer (which must represent an empty configuration), and runs a
