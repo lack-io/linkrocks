@@ -9,7 +9,6 @@ use raft::prelude::{ConfChange, ConfChangeType, Entry, EntryType, Message, Messa
 use raft::raft::StateType;
 use raft::raw_node::RawNode;
 use slog::{Drain, Logger};
-use tokio::task;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,35 +44,28 @@ async fn main() {
         rx_vec.push(rx);
     }
 
-    let (tx_stop, mut rx_stop) = broadcast::channel(10);
-    // let rx_stop = Arc::new(Mutex::new(rx_stop));
+    let (tx_stop, rx_stop) = broadcast::channel(10);
+    let rx_stop = Arc::new(Mutex::new(rx_stop));
 
     // A global pending proposals queue. New proposals will be pushed back into the queue, and
     // after it's committed by the raft cluster, it will be poped from the queue.
     let proposals = Arc::new(Mutex::new(VecDeque::<Proposal>::new()));
 
-    let mut handles = Vec::new();
-    for (i, mut rx) in rx_vec.into_iter().enumerate() {
+    // let mut handles = Vec::new();
+    for (i, rx) in rx_vec.into_iter().enumerate() {
         // A map[peer_id -> sender]. In the example we create 5 nodes, with ids in [1, 5].
         let mailboxes = (1..6u64).zip(tx_vec.iter().cloned()).collect();
-        let mut node = match i {
-            // Peer 1 is the leader.
-            0 => Node::create_raft_leader(1, rx, mailboxes, &logger).await,
-            // Other peers are followers.
-            _ => Node::create_raft_follower(rx, mailboxes).await,
-        };
         let proposals = Arc::clone(&proposals);
-
-        // Tick the raft node per 100ms. So use an `Instant` to trace it.
-        let mut t = Instant::now();
+        let rx_stop = Arc::clone(&rx_stop);
 
         // Clone the stop receiver
         // let rx_stop_clone = rx_stop;
         let logger = logger.clone();
         // Here we spawn the node on a new thread and keep a handle so we can join on them later.
-        let local = task::LocalSet::new();
-        let handle = local.run_until(to_do(&mut node, &logger, t, &proposals, &mut rx_stop));
-        handles.push(handle);
+        // let handle = tokio::spawn(async move {
+        let _ = to_do(i as u64, rx, mailboxes, &logger.clone(), proposals, rx_stop).await;
+        // });
+        // handles.push(handle);
     }
 
     // Propose some conf changes so that followers can be initialized.
@@ -97,32 +89,46 @@ async fn main() {
 
     // Send terminate signals
     for _ in 0..NUM_NODES {
-        tx_stop.send(Signal::Terminate);
+        let _ = tx_stop.send(Signal::Terminate);
     }
 
     // Wait for the thread to finish
-    for th in handles {
-        th;
-    }
+    // for th in handles {
+        // let _ = th.await;
+    // }
 }
 
 async fn to_do(
-    node: &mut Node,
+    id: u64,
+    rx: Receiver<Message>,
+    mailboxes: HashMap<u64, Sender<Message>>,
     logger: &Logger,
-    mut t: Instant,
-    proposals: &Mutex<VecDeque<Proposal>>,
-    rx_stop: &mut Receiver<Signal>,
+    proposals: Arc<Mutex<VecDeque<Proposal>>>,
+    rx_stop: Arc<Mutex<Receiver<Signal>>>,
 ) {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    // A map[peer_id -> sender]. In the example we create 5 nodes, with ids in [1, 5].
+    let mut node = match id {
+        // Peer 1 is the leader.
+        0 => Node::create_raft_leader(1, rx, mailboxes, &logger).await,
+        // Other peers are followers.
+        _ => Node::create_raft_follower(rx, mailboxes).await,
+    };
+    // Tick the raft node per 100ms. So use an `Instant` to trace it.
+    let mut t = Instant::now();
     loop {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        loop {
-            // Step raft messages.
-            match node.my_mailbox.try_recv() {
-                Ok(msg) => node.step(msg, &logger).await,
-                Err(_) => {
-                    break;
+        tokio::select! {
+            val = node.my_mailbox.recv() => {
+                match val {
+                    Ok(msg) => node.step(msg, &logger).await,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return;
+                    },
+                    _ => {},
                 }
-            };
+            },   
+            _ = async {} => {}         
         }
 
         if node.raft_group.is_none() {
@@ -156,19 +162,20 @@ async fn to_do(
         .await;
 
         // Check control signals from
+        let rx_stop = Arc::clone(&rx_stop);
         if check_signals(rx_stop).await {
             break;
         };
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Signal {
     Terminate,
 }
 
-async fn check_signals(receiver: &mut broadcast::Receiver<Signal>) -> bool {
-    match receiver.recv().await {
+async fn check_signals(receiver: Arc<Mutex<broadcast::Receiver<Signal>>>) -> bool {
+    match receiver.lock().await.recv().await {
         Ok(Signal::Terminate) => true,
         // Err(TryRecvError::Empty) => false,
         // Err(TryRecvError::Disconnected) => true,
@@ -442,7 +449,7 @@ async fn propose(raft_group: &mut RawNode<MemStorage>, proposal: &mut Proposal) 
         let data = format!("put {} {}", key, value).into_bytes();
         let _ = raft_group.propose(vec![], data);
     } else if let Some(ref cc) = proposal.conf_change {
-        let _ = raft_group.propose_conf_change(vec![], cc.clone());
+        let _ = raft_group.propose_conf_change(vec![], Box::new(cc.clone()));
     } else if let Some(_transferee) = proposal.transfer_leader {
         // TODO: implement transfer leader.
         unimplemented!();
@@ -462,7 +469,7 @@ async fn add_all_followers(proposals: &Mutex<VecDeque<Proposal>>) {
     for i in 2..6u64 {
         let mut conf_change = ConfChange::default();
         conf_change.node_id = i;
-        conf_change.set_type(ConfChangeType::ConfChangeAddNode);
+        conf_change.set_change_type(ConfChangeType::ConfChangeAddNode);
         loop {
             let (proposal, mut rx) = Proposal::conf_change(&conf_change);
             proposals.lock().await.push_back(proposal);

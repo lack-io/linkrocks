@@ -42,9 +42,9 @@ mod tests {
 
     #[test]
     fn test_hard_state_is_empty() {
-        let empty = HardState::empty();
+        let empty = HardState::new();
         assert!(empty.is_empty());
 
-        assert!(empty.eq(&HardState::empty()));
+        assert!(empty.eq(&HardState::new()));
     }
 }

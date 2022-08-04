@@ -75,7 +75,7 @@ pub const INVALID_INDEX: u64 = 0;
 
 /// SoftState provides state that is useful for logging and debugging.
 /// The state is volatile and does not need to be persisted to the WAL.
-#[derive(Default, PartialEq, Debug)]
+#[derive(Default, PartialEq, Debug, Clone)]
 pub struct SoftState {
     /// The potential leader of the cluster.
     pub leader_id: u64,

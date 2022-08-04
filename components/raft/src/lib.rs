@@ -16,6 +16,7 @@ macro_rules! fatal {
 
 pub mod errors;
 mod log_unstable;
+pub mod bootstrap;
 pub mod node;
 pub mod raw_node;
 pub mod quorum;

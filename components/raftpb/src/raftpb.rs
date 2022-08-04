@@ -101,7 +101,7 @@ pub struct ConfState {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConfChange {
     #[prost(enumeration="ConfChangeType", tag="2")]
-    pub r#type: i32,
+    pub change_type: i32,
     #[prost(uint64, tag="3")]
     pub node_id: u64,
     #[prost(bytes="vec", tag="4")]
@@ -117,7 +117,7 @@ pub struct ConfChange {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConfChangeSingle {
     #[prost(enumeration="ConfChangeType", tag="1")]
-    pub r#type: i32,
+    pub change_type: i32,
     #[prost(uint64, tag="2")]
     pub node_id: u64,
 }

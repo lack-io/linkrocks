@@ -24,7 +24,7 @@ impl ConfChangeI for ConfChange {
     #[inline]
     fn into_v2(self) -> ConfChangeV2 {
         let mut cc = ConfChangeV2::default();
-        let single = new_conf_change_single(self.node_id, self.r#type());
+        let single = new_conf_change_single(self.node_id, self.change_type());
         cc.changes.push(single);
         cc.context = self.context;
         cc
@@ -95,7 +95,7 @@ impl ConfChangeV2 {
 pub fn new_conf_change_single(node_id: u64, ty: ConfChangeType) -> ConfChangeSingle {
     let mut single = ConfChangeSingle::default();
     single.node_id = node_id;
-    single.set_type(ty);
+    single.set_change_type(ty);
     single
 }
 
@@ -119,7 +119,7 @@ pub fn parse_conf_change(s: &str) -> Result<Vec<ConfChangeSingle>, String> {
         let mut cc = ConfChangeSingle::default();
         let mut chars = tok.chars();
         if let Some(next) = chars.next() {
-            cc.set_type(match next {
+            cc.set_change_type(match next {
                 'v' => ConfChangeType::ConfChangeAddNode,
                 'l' => ConfChangeType::ConfChangeAddLearnerNode,
                 'r' => ConfChangeType::ConfChangeRemoveNode,
@@ -144,7 +144,7 @@ pub fn stringify_conf_change(ccs: &[ConfChangeSingle]) -> String {
         if i > 0 {
             s.push(' ');
         }
-        match cc.r#type() {
+        match cc.change_type() {
             ConfChangeType::ConfChangeAddNode => s.push('v'),
             ConfChangeType::ConfChangeRemoveNode => s.push('l'),
             ConfChangeType::ConfChangeAddLearnerNode => s.push('r'),

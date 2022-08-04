@@ -47,7 +47,7 @@ pub fn is_local_msg(t: MessageType) -> bool {
     )
 }
 
-fn is_response_msg(t: MessageType) -> bool {
+pub(crate) fn is_response_msg(t: MessageType) -> bool {
     matches!(
         t,
         MessageType::MsgAppResp
@@ -58,9 +58,31 @@ fn is_response_msg(t: MessageType) -> bool {
     )
 }
 
+pub(super) fn conf_change_to_msg(context: Vec<u8>, cc: Box<dyn ConfChangeI>) -> Message {
+    let (data, ty) = if let Some(cc) = cc.as_v1() {
+        (
+            cc.encode_length_delimited_to_vec(),
+            EntryType::EntryConfChange,
+        )
+    } else {
+        (
+            cc.as_v2().encode_length_delimited_to_vec(),
+            EntryType::EntryConfChangeV2,
+        )
+    };
+    let mut m = Message::default();
+    m.set_msg_type(MessageType::MsgProp);
+    let mut e = Entry::default();
+    e.set_entry_type(ty);
+    e.data = data.into();
+    e.context = context;
+    m.entries = vec![e].into();
+    m
+}
+
 /// Ready encapsulates the entries and messages that are ready to read,
 /// be saved to stable storage, committed or sent to other peers.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct Ready {
     number: u64,
 
@@ -214,7 +236,7 @@ struct ReadyRecord {
 
 /// LightReady encapsulates the commit index, committed entries and
 /// message that are ready to be applied or be sent to other peers.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct LightReady {
     commit_index: Option<u64>,
     committed_entries: Vec<Entry>,
@@ -355,27 +377,10 @@ impl<T: Storage> RawNode<T> {
     pub async fn propose_conf_change(
         &mut self,
         context: Vec<u8>,
-        cc: impl ConfChangeI,
+        cc: Box<dyn ConfChangeI>,
     ) -> Result<()> {
-        let (data, ty) = if let Some(cc) = cc.as_v1() {
-            (
-                cc.encode_length_delimited_to_vec(),
-                EntryType::EntryConfChange,
-            )
-        } else {
-            (
-                cc.as_v2().encode_length_delimited_to_vec(),
-                EntryType::EntryConfChangeV2,
-            )
-        };
-        let mut m = Message::default();
-        m.set_msg_type(MessageType::MsgProp);
-        let mut e = Entry::default();
-        e.set_entry_type(ty);
-        e.data = data.into();
-        e.context = context.into();
-        m.entries = vec![e].into();
-        Ok(())
+        let m = conf_change_to_msg(context, cc);
+        self.raft.step(m).await
     }
 
     /// Applies a config change to the local node. The app must call this when it
@@ -573,7 +578,7 @@ impl<T: Storage> RawNode<T> {
         false
     }
 
-    fn commit_ready(&mut self, rd: Ready) {
+    pub fn commit_ready(&mut self, rd: Ready) {
         if let Some(ss) = rd.ss {
             self.prev_ss = ss;
         }
