@@ -31,6 +31,9 @@ impl Display for VoteResult {
     }
 }
 
+unsafe impl Send for VoteResult {}
+unsafe impl Sync for VoteResult {}
+
 /// Index is a Raft log position
 #[derive(Default, Clone, Copy)]
 pub struct Index {

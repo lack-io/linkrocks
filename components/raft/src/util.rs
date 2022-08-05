@@ -219,4 +219,17 @@ pub fn entry_approximate_size(e: &Entry) -> usize {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use tokio::runtime::Runtime;
+
+    fn new_runtime() -> Runtime {
+        tokio::runtime::Runtime::new().unwrap()
+    }
+
+    #[test]
+    fn test_switch_channel() {
+        new_runtime().block_on(async move {
+            println!("{:?}", 0);
+        });
+    }
+}

@@ -165,6 +165,7 @@ impl MajorityConfig {
     /// >            99 (id=3)
     /// 100
     /// ```
+    #[allow(unused)]
     #[cfg(test)]
     pub(crate) fn describe(&self, l: &impl AckedIndexer) -> String {
         use std::fmt::Write;

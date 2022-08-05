@@ -63,7 +63,7 @@ async fn main() {
         let logger = logger.clone();
         // Here we spawn the node on a new thread and keep a handle so we can join on them later.
         let handle = tokio::spawn(Box::pin(async move {
-            // to_do(i as u64, rx, mailboxes, &logger.clone(), proposals, rx_stop).await;
+            to_do(i as u64, rx, mailboxes, &logger.clone(), proposals, rx_stop).await;
         }));
         // handles.push(handle);
     }

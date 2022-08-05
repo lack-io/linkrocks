@@ -21,6 +21,7 @@ impl JointConfig {
         }
     }
 
+    #[allow(unused)]
     #[cfg(test)]
     pub(crate) fn new_joint_from_majorities(
         incoming: MajorityConfig,

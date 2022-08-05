@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use slog::Logger;
+use tokio::sync::Mutex;
 
 use crate::{
     config::Config,
@@ -25,8 +28,10 @@ where
 
     let mut rn = RawNode::new(c, store, &logger).await?;
     rn.boot_strap(peers).await?;
-    let mut node = AsyncNode::new(rn);
-    node.run().await;
+    let node = AsyncNode::new(rn);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.spawn(async move { node.run().await });
 
     Ok(Box::new(node))
 }
@@ -72,13 +77,13 @@ mod tests {
             .await
             .unwrap();
 
-        node.stop().await;
+        node.clone().lock().await.stop().await;
     }
 
     async fn to_do_some_thing() {
         println!("todo!")
     }
-    
+
     #[tokio::test]
     async fn async_task() {
         to_do_some_thing().await;

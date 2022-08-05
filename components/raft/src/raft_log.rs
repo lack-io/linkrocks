@@ -165,12 +165,13 @@ impl<T: Storage> RaftLog<T> {
     pub async fn find_conflict(&self, ents: &[Entry]) -> u64 {
         for e in ents {
             if !self.match_term(e.index, e.term).await {
+                let term = self.term(e.index).await.unwrap_or(0);
                 if e.index <= self.last_index().await {
                     info!(
                         self.unstable.logger,
                         "found conflict at index {index}",
                         index = e.index;
-                        "existing term" => self.term(e.index).await.unwrap_or(0),
+                        "existing term" => term,
                         "conflicting term" => e.term,
                     )
                 };
