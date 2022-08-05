@@ -62,9 +62,9 @@ async fn main() {
         // let rx_stop_clone = rx_stop;
         let logger = logger.clone();
         // Here we spawn the node on a new thread and keep a handle so we can join on them later.
-        // let handle = tokio::spawn(async move {
-        let _ = to_do(i as u64, rx, mailboxes, &logger.clone(), proposals, rx_stop).await;
-        // });
+        let handle = tokio::spawn(Box::pin(async move {
+            // to_do(i as u64, rx, mailboxes, &logger.clone(), proposals, rx_stop).await;
+        }));
         // handles.push(handle);
     }
 
@@ -127,8 +127,8 @@ async fn to_do(
                     },
                     _ => {},
                 }
-            },   
-            _ = async {} => {}         
+            },
+            _ = async {} => {}
         }
 
         if node.raft_group.is_none() {

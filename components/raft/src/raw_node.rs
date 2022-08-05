@@ -2,18 +2,22 @@ use prost::Message as PbMessage;
 use std::{collections::VecDeque, mem};
 
 use raftpb::{
-    raftpb::{ConfState, Entry, EntryType, HardState, Message, MessageType, Snapshot},
+    raftpb::{
+        ConfChange, ConfChangeType, ConfState, Entry, EntryType, HardState, Message, MessageType,
+        Snapshot,
+    },
     ConfChangeI,
 };
 use slog::{info, Logger};
 
 use crate::{
     config::Config,
-    errors::{Error, Result},
+    errors::{Error, Result, StorageError},
     raft::{Raft, SoftState, StateType},
     read_only::ReadState,
     status::Status,
     storage::{GetEntriesContext, Storage},
+    INVALID_ID,
 };
 
 /// Represents a Peer node in the cluster.
@@ -318,6 +322,74 @@ impl<T: Storage> RawNode<T> {
         Ok(rn)
     }
 
+    /// Bootstrap initializes the *RawNode* for first use by appending configuration
+    /// changes for the supplied peers. This method returns an error if the *Storage*
+    /// in nonempty.
+    ///
+    /// It is recommended that instead of calling this method, applications bootstrap
+    /// their state manually by setting up a Storage that has a first index > 1 and
+    /// which stores the desired ConfState as its `initial_state`.
+    pub async fn boot_strap(&mut self, peers: &[Peer]) -> Result<()> {
+        if peers.len() == 0 {
+            return Err(Error::StepPeerNotFound);
+        }
+
+        let last_index = self.raft.raft_log.store().last_index().await?;
+        if last_index != 0 {
+            return Err(Error::Store(StorageError::Unavailable));
+        }
+
+        // We've faked out initial entries above, but nothing has been
+        // persisted. Start with an empty HardState (thus the first Ready will
+        // emit a HardState update for the app to persist).
+        self.prev_hs.clear();
+
+        // bootstrap the initial membership in a cleaner way.
+        self.raft.become_follower(1, INVALID_ID).await;
+        let mut ents: Vec<Entry> = Vec::new();
+        for (i, peer) in peers.iter().enumerate() {
+            let mut cc = ConfChange::default();
+            cc.set_change_type(ConfChangeType::ConfChangeAddNode);
+            cc.set_node_id(peer.id);
+            if let Some(context) = peer.context.as_ref() {
+                cc.set_context(context.to_vec());
+            }
+            let data = cc.encode_length_delimited_to_vec();
+            let mut ent = Entry::default();
+            ent.set_entry_type(EntryType::EntryConfChange);
+            ent.set_term(1);
+            ent.set_index((i + 1) as u64);
+            if let Some(context) = peer.context.as_ref() {
+                ent.set_context(context.to_vec());
+            }
+            ent.set_data(data);
+            ents.push(ent);
+        }
+        self.raft.raft_log.append(&ents).await;
+
+        // Now apply them, mainly so that the application can call Campaign
+        // immediately after StartNode in tests. Note that these nodes will
+        // be added to raft twice: here and when the application's Ready
+        // loop calls ApplyConfChange. The calls to addNode must come after
+        // all calls to raftLog.append so progress.next is set after these
+        // bootstrapping entries (it is an error if we try to append these
+        // entries since they have already been committed).
+        // We do not set raftLog.applied so the application will be able
+        // to observe all conf changes via Ready.CommittedEntries.
+        //
+        // TODO(bdarnell): These entries are still unstable; do we need to preserve
+        // the invariant that committed < unstable?
+        self.raft.raft_log.committed = ents.len() as u64;
+        for peer in peers {
+            let mut cc = ConfChange::default();
+            cc.set_change_type(ConfChangeType::ConfChangeAddNode);
+            cc.set_node_id(peer.id);
+            self.raft.apply_conf_change(&cc.as_v2()).await?;
+        }
+
+        Ok(())
+    }
+
     /// Create a new RawNode given some [`Cnofig`] and the default logger.
     ///
     /// The default logger is an `slog` to `log` adapter.
@@ -576,6 +648,16 @@ impl<T: Storage> RawNode<T> {
         }
 
         false
+    }
+
+    pub fn accept_ready(&mut self, rd: Ready) {
+        if let Some(ss) = rd.ss {
+            self.prev_ss = ss;
+        }
+        if rd.read_states.len() != 0 {
+            self.raft.read_states = rd.read_states;
+        }
+        self.raft.msgs.clear();
     }
 
     pub fn commit_ready(&mut self, rd: Ready) {

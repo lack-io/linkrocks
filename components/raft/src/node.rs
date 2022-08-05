@@ -1,10 +1,11 @@
-use std::{future::Future, pin::Pin, task::Poll, time::Duration};
+use std::{pin::Pin, time::Duration};
 
 use crate::{
     errors::{Error, Result},
     raw_node::{conf_change_to_msg, is_local_msg, is_response_msg, RawNode, Ready, SnapshotStatus},
     status::Status,
     storage::Storage,
+    util::SwitchChannel,
     INVALID_ID,
 };
 
@@ -12,7 +13,7 @@ use raftpb::{
     raftpb::{ConfChangeV2, ConfState, Entry, Message, MessageType},
     ConfChangeI,
 };
-use slog::warn;
+use slog::{info, warn};
 use tokio::sync::watch;
 use tokio_context::context::Context;
 
@@ -104,55 +105,10 @@ pub trait Node {
     async fn stop(&mut self);
 }
 
-pub(super) struct SwitchChannel<T> {
-    ch: Option<async_channel::Receiver<T>>,
-}
-
-impl<T> SwitchChannel<T> {
-    pub(super) fn new() -> SwitchChannel<T> {
-        SwitchChannel { ch: None }
-    }
-
-    pub(super) fn set_ready(&mut self, ch: Option<async_channel::Receiver<T>>) {
-        self.ch = ch
-    }
-
-    pub(super) fn has_ready(&self) -> bool {
-        self.ch.is_some()
-    }
-
-    pub(super) fn recv(&self) -> SwitchChannelRecv<'_, T> {
-        SwitchChannelRecv { p: self }
-    }
-}
-
-pub(super) struct SwitchChannelRecv<'a, T> {
-    p: &'a SwitchChannel<T>,
-}
-
-impl<T> Future for SwitchChannelRecv<'_, T> {
-    type Output = T;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        if self.p.ch.is_none() {
-            return Poll::Pending;
-        }
-        if let Some(ch) = self.p.ch.as_mut() {
-            if let Poll::Ready(result) = Pin::new(&mut ch.recv()).poll(cx) {
-                if let Ok(val) = result {
-                    return Poll::Ready(val);
-                }
-            }
-        }
-        cx.waker().wake_by_ref();
-        Poll::Pending
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-struct MsgWithResult {
-    m: Message,
-    result: Option<async_channel::Sender<Result<()>>>,
+#[derive(Default)]
+pub(super) struct MsgWithResult {
+    pub(super) m: Message,
+    pub(super) result: Option<async_channel::Sender<Result<()>>>,
 }
 
 pub(super) struct AsyncNode<'a, T: Storage> {
@@ -176,7 +132,8 @@ pub(super) struct AsyncNode<'a, T: Storage> {
     readyc: (async_channel::Sender<Ready>, async_channel::Receiver<Ready>),
     advancec: (async_channel::Sender<()>, async_channel::Receiver<()>),
     tickc: (async_channel::Sender<()>, async_channel::Receiver<()>),
-    done: (watch::Sender<()>, watch::Receiver<()>),
+    done: watch::Receiver<()>,
+    // stopc: watch::Sender<()>,
     stop: (async_channel::Sender<()>, async_channel::Receiver<()>),
     status: (
         async_channel::Sender<async_channel::Sender<Status<'a>>>,
@@ -188,7 +145,7 @@ pub(super) struct AsyncNode<'a, T: Storage> {
 #[async_trait]
 impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
     async fn tick(&mut self) {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         let timer = tokio::time::sleep(Duration::from_millis(10));
         tokio::select! {
             _ = self.tickc.0.send(()) => {}
@@ -236,7 +193,7 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
     }
 
     async fn advance(&mut self) {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         tokio::select! {
             _ = self.advancec.0.send(()) => {},
             _ = donec.changed() => {},
@@ -245,7 +202,7 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
 
     async fn apply_conf_change(&self, cc: Box<dyn ConfChangeI + Send>) -> ConfState {
         let mut conf_state = ConfState::default();
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         tokio::select! {
             _ = self.confc.0.send(cc.as_v2().into_owned()) => {}
             _ = donec.changed() => {}
@@ -262,7 +219,7 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
 
     /// attempts to transfer leadership to be given transferee.
     async fn transfer_leadership(&self, ctx: &mut Context, lead: u64, transfer: u64) {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         let mut msg = Message::default();
         msg.set_msg_type(MessageType::MsgTransferLeader);
         msg.set_from(transfer);
@@ -290,7 +247,7 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
 
     /// reports the given node is not reachable for the last send.
     async fn report_unreachable(&self, id: u64) {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         let mut msg = Message::default();
         msg.set_msg_type(MessageType::MsgUnreachable);
         msg.set_from(id);
@@ -302,7 +259,7 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
 
     async fn report_snapshot(&self, id: u64, status: SnapshotStatus) {
         let rej = status == SnapshotStatus::Failure;
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         let mut msg = Message::default();
         msg.set_msg_type(MessageType::MsgSnapStatus);
         msg.set_from(id);
@@ -314,7 +271,7 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
     }
 
     async fn stop(&mut self) {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         tokio::select! {
             // Not already stopped, so tigger it
             _ = self.stop.0.send(()) => {}
@@ -329,14 +286,31 @@ impl<T: Storage + Send + Sync> Node for AsyncNode<'_, T> {
 }
 
 impl<'a, T: Storage> AsyncNode<'a, T> {
+    pub(super) fn new(rn: RawNode<T>) -> AsyncNode<'a, T> {
+        let (_, rx_done) = watch::channel(());
+        let node = AsyncNode {
+            propc: async_channel::bounded::<MsgWithResult>(1),
+            recvc: async_channel::bounded::<Message>(1),
+            confc: async_channel::bounded::<ConfChangeV2>(1),
+            conf_statec: async_channel::bounded::<ConfState>(1),
+            readyc: async_channel::bounded::<Ready>(1),
+            advancec: async_channel::bounded::<()>(1),
+            tickc: async_channel::bounded::<()>(128),
+            done: rx_done,
+            stop: async_channel::bounded::<()>(1),
+            status: async_channel::bounded(1),
+            rn,
+        };
+
+        node
+    }
+
     pub(super) async fn run(&mut self) {
         let mut rd = Ready::default();
         let mut propc: SwitchChannel<MsgWithResult> = SwitchChannel::new();
         let mut readyc: SwitchChannel<Ready> = SwitchChannel::new();
         let mut advancec: SwitchChannel<()> = SwitchChannel::new();
-        let mut donec = self.done.1.clone();
-
-        // let mut r = &self.rn.raft;
+        let mut donec = self.done.clone();
 
         let mut lead = INVALID_ID;
 
@@ -360,19 +334,13 @@ impl<'a, T: Storage> AsyncNode<'a, T> {
                 lead = self.rn.raft.leader_id;
             }
 
-            // let err = self.rn.raft.step(m).await;
-            // is_response_msg();
-            {
-                let m = Message::default();
-                m.get_msg_type();
-            }
             tokio::select! {
                 pm = propc.recv() => {
                     let mut m = pm.m;
                     m.set_from(self.rn.raft.id);
                     let r = self.rn.raft.step(m).await;
                     if let Some(result) = &pm.result {
-                        result.send(r).await;
+                        let _ = result.send(r).await;
                         result.close();
                     }
                 },
@@ -380,7 +348,7 @@ impl<'a, T: Storage> AsyncNode<'a, T> {
                     // filter out response message from unknown From.
                     if let Some(_) = self.rn.raft.prs().progress().get(&m.from) {
                         if is_response_msg(m.get_msg_type()) {
-                            self.rn.raft.step(m).await;
+                            let _ = self.rn.raft.step(m).await;
                         }
                     }
                 },
@@ -412,19 +380,19 @@ impl<'a, T: Storage> AsyncNode<'a, T> {
                     }
                 },
                 _ = self.tickc.1.recv() => {
-                    self.rn.tick();
+                    let _ = self.rn.tick().await;
                 },
                 _ = self.readyc.0.send(rd.clone()) => {
-                    self.rn.commit_ready(rd.clone());
+                    self.rn.accept_ready(rd.clone());
                     advancec.set_ready(Some(self.advancec.1.clone()));
                 },
                 _ = advancec.recv() => {
-                    self.rn.advance(rd.clone());
+                    let _ = self.rn.advance(rd.clone()).await;
                     rd = crate::raw_node::Ready::default();
                     advancec.set_ready(None);
                 },
                 _ = self.stop.1.recv() => {
-                    self.done.0.closed();
+                    // let _ = self.done.0.send(());
                     return;
                 }
             };
@@ -440,7 +408,7 @@ impl<'a, T: Storage> AsyncNode<'a, T> {
     }
 
     async fn get_status(&self) -> Status<'a> {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         let (tx, rx) = async_channel::bounded(1);
         tokio::select! {
             _ = self.status.0.send(tx) => {}
@@ -453,7 +421,7 @@ impl<'a, T: Storage> AsyncNode<'a, T> {
 
     /// Steps advances the state machine using msgs. The Error::StepCancel will be returned, if any.
     async fn step_with_wait_option(&self, ctx: &mut Context, m: Message, wait: bool) -> Result<()> {
-        let mut donec = self.done.1.clone();
+        let mut donec = self.done.clone();
         if m.get_msg_type() == MessageType::MsgProp {
             tokio::select! {
                 _ = self.recvc.0.send(m) => {return Ok(());},
@@ -516,26 +484,34 @@ mod tests {
     #[tokio::test]
     async fn test_tokio_select() {
         let (tx_tick, rx_tick) = async_channel::bounded::<i32>(1);
-        let (tx_done, rx_done) = watch::channel::<i32>(1);
+        let (tx_done, mut rx_done) = watch::channel(());
 
         let mut donec = rx_done.clone();
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
+            // tx_done.send(());
             drop(tx_done);
         });
 
-        // tx_tick.send(1).await;
+        tx_tick.send(1).await;
         let timer = tokio::time::sleep(Duration::from_millis(10));
         tokio::select! {
             val = tx_tick.send(1) => {
                 println!("ticked!")
             }
-            _ = donec.changed() => { println!("done!! changed: {:?}", donec.has_changed())}
-            v = timer => {println!("tick channel be full: {:?}", v)},
+            _ = donec.changed() => { println!("done!!")}
+            // v = timer => {println!("tick channel be full: {:?}", v)},
+        }
+
+        let mut donec1 = rx_done.clone();
+        tokio::select! {
+            _ = donec1.changed() => { println!("done!!")}
+            // v = timer => {println!("tick channel be full: {:?}", v)},
         }
 
         tokio::time::sleep(Duration::from_secs(2)).await;
+        println!("{:?}", rx_done.changed().await);
     }
 
     #[tokio::test]

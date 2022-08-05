@@ -7,6 +7,9 @@ use slog::{b, record_static, OwnedKVList, Record, KV};
 
 use std::fmt;
 use std::fmt::Write;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Poll;
 
 /// A number to represent that there is no limit.
 pub const NO_LIMIT: u64 = u64::MAX;
@@ -112,6 +115,51 @@ pub fn majority(total: usize) -> usize {
     (total / 2) + 1
 }
 
+pub(super) struct SwitchChannel<T> {
+    ch: Option<async_channel::Receiver<T>>,
+}
+
+impl<T> SwitchChannel<T> {
+    pub(super) fn new() -> SwitchChannel<T> {
+        SwitchChannel { ch: None }
+    }
+
+    pub(super) fn set_ready(&mut self, ch: Option<async_channel::Receiver<T>>) {
+        self.ch = ch
+    }
+
+    pub(super) fn has_ready(&self) -> bool {
+        self.ch.is_some()
+    }
+
+    pub(super) fn recv(&self) -> SwitchChannelRecv<'_, T> {
+        SwitchChannelRecv { p: self }
+    }
+}
+
+pub(super) struct SwitchChannelRecv<'a, T> {
+    p: &'a SwitchChannel<T>,
+}
+
+impl<T> Future for SwitchChannelRecv<'_, T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        if self.p.ch.is_none() {
+            return Poll::Pending;
+        }
+        if let Some(ch) = self.p.ch.as_ref() {
+            if let Poll::Ready(result) = Pin::new(&mut ch.recv()).poll(cx) {
+                if let Ok(val) = result {
+                    return Poll::Ready(val);
+                }
+            }
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
 /// A convenient struct that handles queries to both HashSet.
 pub struct Union<'a> {
     first: &'a HashSet<u64>,
@@ -169,3 +217,6 @@ pub fn entry_approximate_size(e: &Entry) -> usize {
     // We choose 12 in case of large index or large data for normal entry.
     e.data.len() + e.context.len() + 12
 }
+
+#[cfg(test)]
+mod tests {}

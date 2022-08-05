@@ -69,8 +69,15 @@ async fn main() {
     let (sender, mut receiver) = broadcast::channel(1);
 
     // Use another thread to propose a Raft request.
-    let logger_clone = logger.clone();
-    let _ = tokio::spawn(async move { send_propose(logger_clone, sender).await });
+    // let sender_clone = sender.clone();
+    let logger1 = logger.clone();
+    let _ = tokio::spawn(async move {
+        let logger_clone = logger1.clone();
+        send_propose(logger_clone, &sender).await;
+        let logger_clone = logger1.clone();
+        send_propose(logger_clone, &sender).await;
+        drop(sender);
+    });
 
     // Loop forever to drive the Raft.
     let mut t = Instant::now();
@@ -96,8 +103,8 @@ async fn main() {
                     },
                     _ => {},
                 }
-            },   
-            _ = async {} => {}         
+            },
+            _ = async {} => {}
         }
 
         let d = t.elapsed();
@@ -184,7 +191,7 @@ async fn on_ready(raft_group: &mut RawNode<MemStorage>, cbs: &mut HashMap<u8, Pr
     let mut light_rd = raft_group.advance(ready).await;
     // Update commit index.
     if let Some(commit) = light_rd.commit_index() {
-        store.wl().await.mut_hard_state().commit = commit;
+        store.wl().await.mut_hard_state().set_commit(commit);
     }
     // Send out the messages.
     handle_messages(light_rd.take_messages());
@@ -194,9 +201,9 @@ async fn on_ready(raft_group: &mut RawNode<MemStorage>, cbs: &mut HashMap<u8, Pr
     raft_group.advance_apply().await;
 }
 
-async fn send_propose(logger: Logger, sender: broadcast::Sender<Msg>) {
+async fn send_propose(logger: Logger, sender: &broadcast::Sender<Msg>) {
     // Wait some time and send the request to the Raft.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     let (s1, mut r1) = broadcast::channel::<u8>(1);
 
@@ -211,8 +218,8 @@ async fn send_propose(logger: Logger, sender: broadcast::Sender<Msg>) {
         })),
     });
 
-    let n = r1.recv().await.unwrap();
-    assert_eq!(n, 3);
+    let n = r1.recv().await;
+    // println!("{:?}", n)
 
     info!(logger, "receive the propose callback: {:?}", n);
 }
