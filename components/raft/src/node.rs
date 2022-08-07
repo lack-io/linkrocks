@@ -21,7 +21,7 @@ use async_trait::async_trait;
 
 /// Node represents a node in raft cluster.
 #[async_trait]
-pub trait Node {
+pub trait Node: {
     /// tick increments the internal logical clock for the Node by a single tick. Election
     /// timeouts and heartbeat timeouts are in units of ticks.
     async fn tick(&mut self);
